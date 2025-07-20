@@ -1,8 +1,8 @@
-import { Client, Collection, Events, GatewayIntentBits } from 'discord.js';
-import { botConfig } from './config';
-import { Logger } from './logger';
-import { CommandHandler } from './command-handler';
-import { AutoRegisterCommands } from './auto-register';
+import { Client, Collection, Events, GatewayIntentBits } from "discord.js";
+import { botConfig } from "./config";
+import { Logger } from "./logger";
+import { CommandHandler } from "./command-handler";
+import { AutoRegisterCommands } from "./auto-register";
 
 class DiscordBot {
   private client: Client;
@@ -15,6 +15,8 @@ class DiscordBot {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildVoiceStates,
+        GatewayIntentBits.GuildMembers,
       ],
     });
 
@@ -26,15 +28,15 @@ class DiscordBot {
     try {
       // Auto-register commands on startup
       await this.autoRegister.registerCommands();
-      
+
       // Load commands for execution
       await this.commandHandler.loadCommands();
       this.setupEventHandlers();
-      
-      Logger.info('Starting Discord bot...');
+
+      Logger.info("Starting Discord bot...");
       await this.client.login(botConfig.token);
     } catch (error) {
-      Logger.error('Failed to start bot:', error);
+      Logger.error("Failed to start bot:", error);
       process.exit(1);
     }
   }
@@ -42,7 +44,9 @@ class DiscordBot {
   private setupEventHandlers(): void {
     this.client.once(Events.ClientReady, (readyClient) => {
       Logger.info(`Logged in as ${readyClient.user.tag}`);
-      Logger.info(`Bot is ready! Serving ${readyClient.guilds.cache.size} guild(s)`);
+      Logger.info(
+        `Bot is ready! Serving ${readyClient.guilds.cache.size} guild(s)`,
+      );
     });
 
     this.client.on(Events.GuildCreate, (guild) => {
@@ -54,11 +58,11 @@ class DiscordBot {
     });
 
     this.client.on(Events.Error, (error) => {
-      Logger.error('Discord client error:', error);
+      Logger.error("Discord client error:", error);
     });
 
     this.client.on(Events.Warn, (warning) => {
-      Logger.warn('Discord client warning:', warning);
+      Logger.warn("Discord client warning:", warning);
     });
 
     this.commandHandler.setupEventHandlers(this.client);
@@ -66,19 +70,19 @@ class DiscordBot {
 }
 
 // Handle graceful shutdown
-process.on('SIGINT', () => {
-  Logger.info('Received SIGINT, shutting down gracefully...');
+process.on("SIGINT", () => {
+  Logger.info("Received SIGINT, shutting down gracefully...");
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  Logger.info('Received SIGTERM, shutting down gracefully...');
+process.on("SIGTERM", () => {
+  Logger.info("Received SIGTERM, shutting down gracefully...");
   process.exit(0);
 });
 
 // Start the bot
 const bot = new DiscordBot();
 bot.start().catch((error) => {
-  Logger.error('Unhandled error during startup:', error);
+  Logger.error("Unhandled error during startup:", error);
   process.exit(1);
 });
