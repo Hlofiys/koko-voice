@@ -1,12 +1,12 @@
 import { entersState, getVoiceConnection, joinVoiceChannel, VoiceConnectionStatus } from '@discordjs/voice';
 import type { ChatInputCommandInteraction, Snowflake } from 'discord.js';
-import { createListeningStream } from './createListeningStream.js';
+import { createVolumeMonitoringStream } from './createListeningStream.js';
+import { structuredLog } from './modernFeatures.js';
 
-async function join(
-	interaction: ChatInputCommandInteraction<'cached'>,
-	recordable: Set<Snowflake>,
-	activeRecordings: Map<Snowflake, boolean>
-) {
+const mutedUsers = new Map<Snowflake, NodeJS.Timeout>();
+const activeStreams = new Map<Snowflake, () => void>();
+
+async function join(interaction: ChatInputCommandInteraction<'cached'>) {
 	await interaction.deferReply();
 
 	let connection = getVoiceConnection(interaction.guildId);
@@ -22,186 +22,134 @@ async function join(
 			channelId: interaction.member.voice.channel.id,
 			guildId: interaction.guild.id,
 			selfDeaf: false,
-			selfMute: true,
+			selfMute: false,
 		});
 	}
 
 	try {
 		await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-		
 		const receiver = connection.receiver;
 
+		// Subscribe to all users speaking in the channel
 		receiver.speaking.on('start', async (userId) => {
-			if (recordable.has(userId) && !activeRecordings.get(userId)) {
-				try {
-					const user = await interaction.client.users.fetch(userId);
-					activeRecordings.set(userId, true);
-					await createListeningStream(receiver, user, activeRecordings);
-				} catch (error) {
-					console.error(`Error starting recording for user ${userId}:`, error);
-					activeRecordings.set(userId, false);
-				}
+			if (activeStreams.has(userId)) {
+				return; // Already monitoring this user
+			}
+
+			try {
+				const user = await interaction.client.users.fetch(userId);
+				const member = await interaction.guild.members.fetch(userId);
+				const cleanup = createVolumeMonitoringStream(receiver, user, member, mutedUsers);
+				activeStreams.set(userId, cleanup);
+			} catch (error) {
+				console.error(`Error starting volume monitoring for user ${userId}:`, error);
 			}
 		});
 
-		await interaction.followUp(`✅ Ready! Joined **${interaction.member?.voice.channel?.name}** and listening for speech.`);
+		receiver.speaking.on('end', (userId) => {
+			if (activeStreams.has(userId)) {
+				const cleanup = activeStreams.get(userId);
+				if (cleanup) {
+					cleanup();
+				}
+				activeStreams.delete(userId);
+				structuredLog('info', 'Stopped volume monitoring', { userId });
+			}
+		});
+
+		await interaction.followUp(`✅ Ready! Joined **${interaction.member?.voice.channel?.name}** and monitoring ALL users' volume levels automatically.`);
 	} catch (error) {
 		console.warn('Failed to join voice channel:', error);
 		await interaction.followUp('❌ Failed to join voice channel within 20 seconds, please try again later!');
 	}
 }
 
-async function record(
-	interaction: ChatInputCommandInteraction<'cached'>,
-	recordable: Set<Snowflake>,
-	activeRecordings: Map<Snowflake, boolean>
-) {
+async function leave(interaction: ChatInputCommandInteraction<'cached'>) {
 	const connection = getVoiceConnection(interaction.guildId);
-	
-	if (!connection) {
-		await interaction.reply({
-			content: '❌ I need to be in a voice channel first! Use `/join` to make me join your voice channel.',
-			ephemeral: true,
-		});
-		return;
-	}
 
-	const user = interaction.options.getUser('speaker', true);
-	
-	if (recordable.has(user.id)) {
-		await interaction.reply({
-			content: `🎤 Already recording **${user.displayName}**!`,
-			ephemeral: true,
-		});
-		return;
-	}
-
-	recordable.add(user.id);
-
-	// If the user is currently speaking, start recording immediately
-	if (connection.receiver.speaking.users.has(user.id) && !activeRecordings.get(user.id)) {
-		try {
-			activeRecordings.set(user.id, true);
-			await createListeningStream(connection.receiver, user, activeRecordings);
-		} catch (error) {
-			console.error(`Error starting immediate recording for user ${user.id}:`, error);
-			activeRecordings.set(user.id, false);
+	if (connection) {
+		// Clean up all active streams and timeouts
+		for (const cleanup of activeStreams.values()) {
+			cleanup();
 		}
-	}
+		activeStreams.clear();
 
-	await interaction.reply({
-		content: `🎤 Now listening for **${user.displayName}**'s voice! I'll automatically record when they speak.`,
-		ephemeral: true,
-	});
-}
-
-async function stop(
-	interaction: ChatInputCommandInteraction<'cached'>,
-	recordable: Set<Snowflake>,
-	activeRecordings: Map<Snowflake, boolean>
-) {
-	const user = interaction.options.getUser('speaker');
-	
-	if (user) {
-		if (!recordable.has(user.id)) {
-			await interaction.reply({
-				content: `❌ I'm not recording **${user.displayName}**.`,
-				ephemeral: true,
-			});
-			return;
+		for (const timeout of mutedUsers.values()) {
+			clearTimeout(timeout);
 		}
-		
-		recordable.delete(user.id);
-		activeRecordings.delete(user.id);
-		
-		await interaction.reply({
-			content: `🛑 Stopped recording **${user.displayName}**.`,
-			ephemeral: true,
-		});
+		mutedUsers.clear();
+
+		connection.destroy();
+		await interaction.reply({ content: '👋 Left the voice channel!', ephemeral: true });
 	} else {
-		// Stop recording all users
-		const recordedCount = recordable.size;
-		recordable.clear();
-		activeRecordings.clear();
-		
-		await interaction.reply({
-			content: `🛑 Stopped recording all users (${recordedCount} users were being recorded).`,
-			ephemeral: true,
-		});
+		await interaction.reply({ content: '❌ I\'m not in a voice channel in this server!', ephemeral: true });
 	}
 }
 
-async function leave(
-	interaction: ChatInputCommandInteraction<'cached'>,
-	recordable: Set<Snowflake>,
-	activeRecordings: Map<Snowflake, boolean>
-) {
-	const connection = getVoiceConnection(interaction.guildId);
-	
-	if (!connection) {
-		await interaction.reply({
-			content: '❌ I\'m not in a voice channel in this server!',
-			ephemeral: true,
-		});
-		return;
-	}
-
-	const recordedCount = recordable.size;
-	connection.destroy();
-	recordable.clear();
-	activeRecordings.clear();
-
-	await interaction.reply({
-		content: `👋 Left the voice channel! ${recordedCount > 0 ? `Stopped recording ${recordedCount} user(s).` : ''}`,
-		ephemeral: true,
-	});
+async function threshold(interaction: ChatInputCommandInteraction<'cached'>) {
+	const newThreshold = interaction.options.getNumber('value', true);
+	process.env.VOLUME_THRESHOLD = newThreshold.toString();
+	await interaction.reply({ content: `🔊 Volume threshold updated to **${newThreshold}**`, ephemeral: true });
 }
 
-async function status(
-	interaction: ChatInputCommandInteraction<'cached'>,
-	recordable: Set<Snowflake>,
-	activeRecordings: Map<Snowflake, boolean>
-) {
-	const connection = getVoiceConnection(interaction.guildId);
-	
-	if (!connection) {
-		await interaction.reply({
-			content: '❌ I\'m not in a voice channel in this server.',
-			ephemeral: true,
-		});
-		return;
-	}
+async function unmute(interaction: ChatInputCommandInteraction<'cached'>) {
+	const user = interaction.options.getUser('user');
 
-	const channelId = connection.joinConfig.channelId;
-	const channel = interaction.guild.channels.cache.get(channelId!);
-	
-	let statusMessage = `🤖 **Bot Status**\n`;
-	statusMessage += `📍 Connected to: **${channel?.name || 'Unknown Channel'}**\n`;
-	statusMessage += `🎤 Recording ${recordable.size} user(s)\n`;
-	
-	if (recordable.size > 0) {
-		statusMessage += `\n**Currently recording:**\n`;
-		for (const userId of recordable) {
+	if (user) {
+		const unmuteTimeout = mutedUsers.get(user.id);
+		if (unmuteTimeout) {
+			clearTimeout(unmuteTimeout);
+			mutedUsers.delete(user.id);
 			try {
-				const user = await interaction.client.users.fetch(userId);
-				const isActivelyRecording = activeRecordings.get(userId) ? '🔴' : '⚪';
-				statusMessage += `${isActivelyRecording} ${user.displayName}\n`;
-			} catch (error) {
-				statusMessage += `❓ Unknown User (${userId})\n`;
+				const member = await interaction.guild.members.fetch(user.id);
+				if (member.voice.channel) {
+					await member.voice.setMute(false, 'Manual unmute');
+				}
+				await interaction.reply({ content: `🔊 Unmuted **${user.displayName}**`, ephemeral: true });
+			} catch {
+				await interaction.reply({ content: `❌ Could not unmute **${user.displayName}**`, ephemeral: true });
+			}
+		} else {
+			await interaction.reply({ content: `❌ **${user.displayName}** is not muted.`, ephemeral: true });
+		}
+	} else {
+		// Unmute all
+		for (const [userId, timeout] of mutedUsers.entries()) {
+			clearTimeout(timeout);
+			try {
+				const member = await interaction.guild.members.fetch(userId);
+				if (member.voice.channel) {
+					await member.voice.setMute(false, 'Manual unmute all');
+				}
+			} catch {
+				// Ignore errors
 			}
 		}
+		mutedUsers.clear();
+		await interaction.reply({ content: '🔊 Unmuted all users.', ephemeral: true });
+	}
+}
+
+async function status(interaction: ChatInputCommandInteraction<'cached'>) {
+	const connection = getVoiceConnection(interaction.guildId);
+	if (!connection) {
+		await interaction.reply({ content: '❌ I\'m not in a voice channel.', ephemeral: true });
+		return;
 	}
 
+	const mutedCount = mutedUsers.size;
+	const monitoringCount = activeStreams.size;
+
 	await interaction.reply({
-		content: statusMessage,
+		content: `📊 **Status**\n- Muted users: ${mutedCount}\n- Actively monitoring: ${monitoringCount}`,
 		ephemeral: true,
 	});
 }
 
 export const interactionHandlers = new Map([
-	['join', join],
-	['leave', leave],
-	['record', record],
-	['stop', stop],
+	['monitor', join],
+	['stop', leave],
+	['threshold', threshold],
+	['unmute', unmute],
 	['status', status],
 ]);

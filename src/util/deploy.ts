@@ -7,39 +7,42 @@ dotenv.config();
 
 const commands = [
 	new SlashCommandBuilder()
-		.setName('join')
-		.setDescription('Make the bot join your voice channel and start listening'),
-	
-	new SlashCommandBuilder()
-		.setName('leave')
-		.setDescription('Make the bot leave the voice channel and stop all recordings'),
-	
-	new SlashCommandBuilder()
-		.setName('record')
-		.setDescription('Start recording a specific user\'s voice')
-		.addUserOption(option =>
-			option
-				.setName('speaker')
-				.setDescription('The user to record')
-				.setRequired(true)
-		),
+		.setName('monitor')
+		.setDescription('Start monitoring ALL users in your voice channel for loud volume'),
 	
 	new SlashCommandBuilder()
 		.setName('stop')
-		.setDescription('Stop recording a user or all users')
+		.setDescription('Stop monitoring and leave the voice channel'),
+	
+	new SlashCommandBuilder()
+		.setName('threshold')
+		.setDescription('Set the volume threshold for auto-muting (0.0 to 1.0)')
+		.addNumberOption(option =>
+			option
+				.setName('value')
+				.setDescription('Volume threshold (0.0 = very quiet, 1.0 = very loud)')
+				.setRequired(true)
+				.setMinValue(0.0)
+				.setMaxValue(1.0)
+		),
+	
+	new SlashCommandBuilder()
+		.setName('unmute')
+		.setDescription('Manually unmute users who were auto-muted')
 		.addUserOption(option =>
 			option
-				.setName('speaker')
-				.setDescription('The user to stop recording (leave empty to stop all)')
+				.setName('user')
+				.setDescription('The user to unmute (leave empty to unmute all)')
 				.setRequired(false)
 		),
 	
 	new SlashCommandBuilder()
 		.setName('status')
-		.setDescription('Show the bot\'s current status and who is being recorded'),
+		.setDescription('Show the bot\'s current monitoring status'),
 ].map(command => command.toJSON());
 
 const rest = new REST().setToken(process.env.DISCORD_TOKEN!);
+
 
 try {
 	console.log(`🚀 Started refreshing ${commands.length} application (/) commands.`);

@@ -91,12 +91,27 @@ export function createTimeoutController(timeoutMs: number): AbortController {
  */
 export interface LogContext {
 	userId?: string;
+	username?: string;
 	guildId?: string;
 	channelId?: string;
 	filename?: string;
 	originalFile?: string;
 	convertedFile?: string;
 	duration?: number;
+	maxDuration?: number;
+	silenceDuration?: number;
+	volume?: string;
+	threshold?: number;
+	muteDuration?: number;
+	currentStatus?: boolean;
+	isAlreadyMonitoring?: boolean;
+	chunkSize?: number;
+	monitoredCount?: number;
+	recordedCount?: number;
+	activeCount?: number;
+	mutedCount?: number;
+	checkCount?: number;
+	cooldownRemaining?: number;
 	error?: unknown;
 }
 

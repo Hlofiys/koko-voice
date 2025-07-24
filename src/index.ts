@@ -46,7 +46,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 			return;
 		}
 
-		await handleInteraction(interaction, recordable, activeRecordings);
+		await handleInteraction(interaction);
 	} catch (error) {
 		console.error('Error handling interaction:', error);
 		
@@ -62,6 +62,24 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.on(Events.Error, (error) => {
 	console.error('Discord client error:', error);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+	console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+	// Don't crash on stream errors - they're expected with Discord voice
+	if (error.message.includes('stream.push() after EOF') || 
+		error.message.includes('ERR_STREAM_PUSH_AFTER_EOF')) {
+		console.warn('⚠️  Stream EOF error (expected, ignoring):', error.message);
+		return;
+	}
+	
+	console.error('Uncaught Exception:', error);
+	// Don't exit on stream errors
 });
 
 // Graceful shutdown

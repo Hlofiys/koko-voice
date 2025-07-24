@@ -1,90 +1,128 @@
-import { createWriteStream } from 'node:fs';
-import { pipeline } from 'node:stream/promises';
 import { EndBehaviorType, type VoiceReceiver } from '@discordjs/voice';
-import type { User, Snowflake } from 'discord.js';
+import type { User, Snowflake, GuildMember } from 'discord.js';
 import * as prism from 'prism-media';
-import { convertToWav } from './audioConverter.js';
-import { PerformanceMonitor, structuredLog, createTimeoutController } from './modernFeatures.js';
+import { PerformanceMonitor, structuredLog } from './modernFeatures.js';
+import { analyzeAudioVolume } from './volumeAnalyzer.js';
 
-export async function createListeningStream(
+/**
+ * Creates a volume monitoring stream for a user and returns a cleanup function.
+ */
+export function createVolumeMonitoringStream(
 	receiver: VoiceReceiver,
 	user: User,
-	activeRecordings: Map<Snowflake, boolean>
-) {
-	const timestamp = Date.now();
+	member: GuildMember,
+	mutedUsers: Map<Snowflake, NodeJS.Timeout>,
+): () => void {
+	// Use Manual behavior to control the stream's lifecycle explicitly
 	const opusStream = receiver.subscribe(user.id, {
 		end: {
-			behavior: EndBehaviorType.AfterSilence,
-			duration: parseInt(process.env.RECORDING_SILENCE_DURATION || '1000'),
+			behavior: EndBehaviorType.Manual,
 		},
 	});
 
-	const oggStream = new (prism.opus as any).OggLogicalBitstream({
-		opusHead: new (prism.opus as any).OpusHead({
-			channelCount: 2,
-			sampleRate: 48_000,
-		}),
-		pageSizeControl: {
-			maxPackets: 10,
-		},
+	const decoder = new (prism.opus as any).Decoder({
+		frameSize: 960,
+		channels: 2,
+		rate: 48000,
 	});
 
-	const recordingsDir = process.env.RECORDINGS_DIR || './recordings';
-	const filename = `${recordingsDir}/${timestamp}-${user.id}.ogg`;
-	const out = createWriteStream(filename);
-
-	structuredLog('info', 'Started recording', {
+	structuredLog('info', 'Started volume monitoring', {
 		userId: user.id,
-		filename,
+		username: user.displayName,
 	});
-	
-	PerformanceMonitor.mark(`recording-${user.id}`);
 
+	const cleanup = () => {
+		if (!opusStream.destroyed) {
+			opusStream.destroy();
+		}
+		if (!decoder.destroyed) {
+			decoder.destroy();
+		}
+	};
+
+	// Pipe the streams
+	opusStream.pipe(decoder);
+
+	// Handle stream errors
+	opusStream.on('error', (error: any) => {
+		if (error.message.includes('push() after EOF') || error.message.includes('ERR_STREAM_PUSH_AFTER_EOF')) {
+			// Ignore common, expected errors
+		} else {
+			structuredLog('error', 'Opus stream error', { userId: user.id, error: error.message });
+		}
+		cleanup();
+	});
+
+	decoder.on('error', (error: any) => {
+		// This error is expected and can be safely ignored
+		if (error.message.includes('out of range')) {
+			return;
+		}
+		structuredLog('error', 'Decoder stream error', { userId: user.id, error: error.message });
+		cleanup();
+	});
+
+	let lastVolumeCheck = 0;
+	const VOLUME_CHECK_INTERVAL = 100; // ms
+
+	decoder.on('data', (pcmData: Buffer) => {
+		const now = Date.now();
+		if (now - lastVolumeCheck < VOLUME_CHECK_INTERVAL) {
+			return;
+		}
+		lastVolumeCheck = now;
+
+		try {
+			const volume = analyzeAudioVolume(pcmData);
+			const volumeThreshold = parseFloat(process.env.VOLUME_THRESHOLD || '0.8');
+
+			if (volume > volumeThreshold && !mutedUsers.has(user.id)) {
+				muteUserForBeingLoud(member, user, volume, mutedUsers);
+			}
+		} catch (error: any) {
+			structuredLog('error', 'Error analyzing volume', {
+				userId: user.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	});
+
+	return cleanup;
+}
+
+async function muteUserForBeingLoud(
+	member: GuildMember,
+	user: User,
+	volume: number,
+	mutedUsers: Map<Snowflake, NodeJS.Timeout>,
+) {
 	try {
-		// Create timeout controller for the recording
-		const timeoutController = createTimeoutController(
-			parseInt(process.env.MAX_RECORDING_DURATION || '300000')
-		);
+		const muteDuration = parseInt(process.env.MUTE_DURATION || '30000'); // 30 seconds default
+		await member.voice.setMute(true, 'Volume too loud - automatic mute');
 
-		await pipeline(opusStream, oggStream, out, { signal: timeoutController.signal });
-		
-		const duration = PerformanceMonitor.measure('Recording completed', `recording-${user.id}`);
-		
-		structuredLog('info', 'Recording completed', {
+		structuredLog('info', 'User muted for being too loud', {
 			userId: user.id,
-			filename,
-			duration,
+			username: user.displayName,
+			volume: volume.toFixed(3),
+			muteDuration: muteDuration / 1000,
 		});
 
-		// Mark recording as finished
-		activeRecordings.set(user.id, false);
-
-		// Convert to WAV if enabled
-		if (process.env.AUDIO_CONVERT_TO_WAV === 'true') {
+		const unmuteTimeout = setTimeout(async () => {
 			try {
-				structuredLog('info', 'Converting audio to WAV', {
-					userId: user.id,
-					filename,
-				});
-				
-				const wavFilename = await convertToWav(filename);
-				
-				structuredLog('info', 'Audio conversion completed', {
-					userId: user.id,
-					originalFile: filename,
-					convertedFile: wavFilename,
-				});
-			} catch (conversionError) {
-				structuredLog('error', 'Error during audio conversion', {
-					userId: user.id,
-					filename,
-					error: conversionError,
-				});
+				// Check if member is still in a voice channel
+				if (member.voice.channel) {
+					await member.voice.setMute(false, 'Automatic unmute after volume timeout');
+					structuredLog('info', 'User automatically unmuted', { userId: user.id });
+				}
+			} catch (unmuteError: any) {
+				// Ignore errors if user has left, etc.
+			} finally {
+				mutedUsers.delete(user.id);
 			}
-		}
+		}, muteDuration);
 
+		mutedUsers.set(user.id, unmuteTimeout);
 	} catch (error: any) {
-		console.warn(`❌ Error recording file ${filename} - ${error.message}`);
-		activeRecordings.set(user.id, false);
+		structuredLog('error', 'Error muting user', { userId: user.id, error });
 	}
 }

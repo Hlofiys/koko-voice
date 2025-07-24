@@ -16,12 +16,18 @@ export async function convertToWav(oggFilePath: string): Promise<string> {
 		console.log(`🔄 Converting ${oggFilePath} to WAV...`);
 
 		const ffmpeg = spawn('ffmpeg', [
-			'-i', oggFilePath,
-			'-acodec', 'pcm_s16le',
-			'-ac', '1',
-			'-ar', '16000',
+			'-i',
+			oggFilePath,
+			'-acodec',
+			'pcm_s16le',
+			'-ac',
+			'1',
+			'-ar',
+			'48000',
+			'-t',
+			'30',
 			'-y',
-			wavFilePath
+			wavFilePath,
 		]);
 
 		ffmpeg.stdout.on('data', (data) => {
