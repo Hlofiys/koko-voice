@@ -1,6 +1,6 @@
 import process from 'node:process';
 import { Client, Events, GatewayIntentBits, type Snowflake } from 'discord.js';
-import { interactionHandlers } from './util/interactions.js';
+import { interactionHandlers, handleLiveCommand } from './util/interactions.js';
 import { ensureRecordingsDirectory } from './util/fileUtils.js';
 import dotenv from 'dotenv';
 
@@ -38,7 +38,7 @@ const activeRecordings = new Map<Snowflake, boolean>();
 client.on(Events.InteractionCreate, async (interaction) => {
 	if (!interaction.inCachedGuild() || !interaction.isChatInputCommand()) return;
 
-	const handleInteraction = interactionHandlers.get(interaction.commandName);
+	const handleInteraction = interactionHandlers.get(interaction.commandName) ?? (interaction.commandName === 'live' ? handleLiveCommand : undefined);
 
 	try {
 		if (!handleInteraction) {

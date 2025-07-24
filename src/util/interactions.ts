@@ -1,10 +1,51 @@
-import { entersState, getVoiceConnection, joinVoiceChannel, VoiceConnectionStatus } from '@discordjs/voice';
+import { entersState, getVoiceConnection, joinVoiceChannel, VoiceConnectionStatus, createAudioPlayer, createAudioResource, NoSubscriberBehavior } from '@discordjs/voice';
 import type { ChatInputCommandInteraction, Snowflake } from 'discord.js';
 import { createVolumeMonitoringStream } from './createListeningStream.js';
 import { structuredLog } from './modernFeatures.js';
+import { Gemini } from './gemini.js';
+import { Readable } from 'node:stream';
 
 const mutedUsers = new Map<Snowflake, NodeJS.Timeout>();
 const activeStreams = new Map<Snowflake, () => void>();
+
+export async function handleLiveCommand(interaction: ChatInputCommandInteraction<'cached'>) {
+    await interaction.deferReply();
+
+    let connection = getVoiceConnection(interaction.guildId);
+    if (!connection) {
+        if (!interaction.member?.voice.channel) {
+            await interaction.followUp('❌ Join a voice channel and then try that again!');
+            return;
+        }
+
+        connection = joinVoiceChannel({
+            adapterCreator: interaction.guild.voiceAdapterCreator as any,
+            channelId: interaction.member.voice.channel.id,
+            guildId: interaction.guild.id,
+            selfDeaf: false,
+            selfMute: false,
+        });
+    }
+
+    try {
+        await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+        const user = interaction.user;
+        const gemini = new Gemini();
+        const audioBuffer = await gemini.startConversation(connection.receiver, user);
+        const player = createAudioPlayer({
+            behaviors: {
+                noSubscriber: NoSubscriberBehavior.Pause,
+            },
+        });
+        const resource = createAudioResource(Readable.from(audioBuffer));
+        player.play(resource);
+        connection.subscribe(player);
+        await interaction.followUp('Playing Gemini response...');
+    } catch (error) {
+        structuredLog('error', 'Error in live command', { error });
+        await interaction.followUp('An error occurred while processing your request.');
+    }
+}
 
 async function join(interaction: ChatInputCommandInteraction<'cached'>) {
 	await interaction.deferReply();

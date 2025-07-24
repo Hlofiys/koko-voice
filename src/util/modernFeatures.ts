@@ -113,6 +113,9 @@ export interface LogContext {
 	checkCount?: number;
 	cooldownRemaining?: number;
 	error?: unknown;
+	reason?: string;
+    bufferSize?: number;
+    base64Length?: number;
 }
 
 export function structuredLog(level: 'info' | 'warn' | 'error', message: string, context?: LogContext): void {

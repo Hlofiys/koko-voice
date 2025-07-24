@@ -39,6 +39,10 @@ const commands = [
 	new SlashCommandBuilder()
 		.setName('status')
 		.setDescription('Show the bot\'s current monitoring status'),
+
+	new SlashCommandBuilder()
+		.setName('live')
+		.setDescription('Start a live conversation with Gemini'),
 ].map(command => command.toJSON());
 
 const rest = new REST().setToken(process.env.DISCORD_TOKEN!);
