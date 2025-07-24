@@ -13,7 +13,7 @@ A Discord bot that integrates with Google's Gemini Live API to enable real-time 
 
 ## Prerequisites
 
-- Node.js 18.0.0 or higher
+- Node.js 24.1.0 or higher
 - Discord Bot Token
 - Google Gemini API Key
 - A Discord server where you have admin permissions
