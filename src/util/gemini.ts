@@ -76,6 +76,8 @@ export class Gemini {
         // 2. Convert the OGG file to a WAV file
         const tempWavPath = tempOggPath.replace('.ogg', '.wav');
         await this.convertOggToWav(tempOggPath, tempWavPath);
+        // Delete the OGG file now that we have the WAV file
+        await fs.unlink(tempOggPath);
 
         // 3. Prepare for Gemini Live API
         const responseQueue: any[] = [];
@@ -123,6 +125,7 @@ export class Gemini {
         // 4. Send the converted WAV file to Gemini
         structuredLog('info', 'Reading converted WAV file...', { filename: tempWavPath });
         const fileBuffer = await fs.readFile(tempWavPath);
+        await fs.unlink(tempWavPath); // Delete the WAV file now that we have it in memory
         structuredLog('info', 'WAV file read', { bufferSize: fileBuffer.length });
 
         if (fileBuffer.length === 0) {
@@ -132,12 +135,16 @@ export class Gemini {
 
         const wav = new WaveFile();
         wav.fromBuffer(fileBuffer);
+        wav.toSampleRate(16000); // Gemini expects 16kHz
         wav.toBitDepth('16'); // Ensure bit depth is set correctly
 
         const base64Audio = wav.toBase64();
         structuredLog('info', 'Audio converted to Base64', { base64Length: base64Audio.length });
 
         structuredLog('info', 'Sending audio to Gemini...');
+        // session.sendRealtimeInput({
+        //     text: `User ${user.username} is speaking. Respond something in any case , even if there is no audio.`,
+        // });
         session.sendRealtimeInput({
             audio: {
                 data: base64Audio,
@@ -162,12 +169,8 @@ export class Gemini {
         const audioBuffer = new Int16Array(combinedAudio);
         const wf = new WaveFile();
         wf.fromScratch(1, 24000, '16', audioBuffer); // Gemini output is 24kHz
-        
-        session.close();
 
-        // 6. Cleanup temporary files
-        await fs.unlink(tempOggPath);
-        await fs.unlink(tempWavPath);
+        session.close();
 
         return Buffer.from(wf.toBuffer());
     }

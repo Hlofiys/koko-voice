@@ -31,16 +31,40 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
         await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
         const user = interaction.user;
         const gemini = new Gemini();
-        const audioBuffer = await gemini.startConversation(connection.receiver, user);
-        const player = createAudioPlayer({
-            behaviors: {
-                noSubscriber: NoSubscriberBehavior.Pause,
-            },
-        });
-        const resource = createAudioResource(Readable.from(audioBuffer));
-        player.play(resource);
-        connection.subscribe(player);
-        await interaction.followUp('Playing Gemini response...');
+
+        while (connection.state.status === VoiceConnectionStatus.Ready) {
+            structuredLog('info', 'Starting live conversation with Gemini', { userId: user.id });
+            const audioBuffer = await gemini.startConversation(connection.receiver, user);
+            structuredLog('info', 'Gemini conversation completed', { userId: user.id });
+
+            if (audioBuffer.length === 0) {
+                structuredLog('warn', 'Received empty audio buffer from Gemini, skipping playback.');
+                continue; // Skip playback if the audio buffer is empty
+            }
+
+            const player = createAudioPlayer({
+                behaviors: {
+                    noSubscriber: NoSubscriberBehavior.Pause,
+                },
+            });
+
+            const subscription = connection.subscribe(player);
+
+            player.on('stateChange', (oldState, newState) => {
+                if (newState.status === 'idle') {
+                    player.stop();
+                    if (subscription) {
+                        subscription.unsubscribe();
+                    }
+                }
+            });
+
+            structuredLog('info', 'Playing Gemini response audio', { userId: user.id });
+            const resource = createAudioResource(Readable.from(audioBuffer));
+            player.play(resource);
+            // The connection is already subscribed to the player, no need to subscribe again
+            await interaction.followUp('Playing Gemini response...');
+        }
     } catch (error) {
         structuredLog('error', 'Error in live command', { error });
         await interaction.followUp('An error occurred while processing your request.');
