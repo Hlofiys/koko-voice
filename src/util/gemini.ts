@@ -48,14 +48,34 @@ export class Gemini {
     }
 
     private async convertOggToWav(oggPath: string, wavPath: string): Promise<void> {
+        structuredLog('info', `Converting OGG at ${oggPath} to WAV at ${wavPath}`);
         try {
             // Use ffmpeg to convert OGG to WAV, resample to 16kHz, and convert to mono
-            const { stdout, stderr } = await execAsync(
-                `ffmpeg -i ${oggPath} -filter:a "volume=2.0" -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`
+            const { stderr } = await execAsync(
+                `ffmpeg -i ${oggPath} -filter:a "volume=2.0" -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
             );
             if (stderr) {
                 structuredLog('warn', 'ffmpeg conversion warning', { error: stderr });
             }
+            structuredLog('info', 'ffmpeg conversion from OGG to WAV completed');
+        } catch (error) {
+            structuredLog('error', 'ffmpeg conversion failed', { error });
+            throw new Error('Failed to convert audio file.');
+        }
+    }
+
+    private async convertMp3ToWav(mp3Path: string, wavPath: string): Promise<void> {
+        structuredLog('info', `Converting MP3 at ${mp3Path} to WAV at ${wavPath}`);
+        try {
+            // Convert MP3 to WAV using ffmpeg
+            const { stderr } = await execAsync(
+                `ffmpeg -i ${mp3Path} -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
+            );
+            
+            if (stderr && !stderr.includes('Warning')) {
+                structuredLog('warn', 'ffmpeg MP3 conversion warning', { error: stderr });
+            }
+            structuredLog('info', 'ffmpeg conversion from MP3 to WAV completed');
         } catch (error) {
             structuredLog('error', 'ffmpeg conversion failed', { error });
             throw new Error('Failed to convert audio file.');
@@ -67,10 +87,13 @@ export class Gemini {
         const opusStream = receiver.subscribe(user.id, {
             end: {
                 behavior: EndBehaviorType.AfterSilence,
-                duration: 1500, // Increased silence duration
+                duration: 1000, // Reduced silence duration
             },
         });
 
+        
+
+        
         const oggStream = new prism.opus.OggLogicalBitstream({
             opusHead: new prism.opus.OpusHead({
                 channelCount: 2,
@@ -80,7 +103,6 @@ export class Gemini {
                 maxPackets: 10,
             },
         });
-
         const tempOggPath = `./recordings/${Date.now()}-${user.id}.ogg`;
         const out = createWriteStream(tempOggPath);
 
@@ -225,25 +247,31 @@ export class Gemini {
                                     
                                     if (audioBuffer) {
                                         structuredLog('info', `Downloaded audio from Silero: ${audioBuffer.length} bytes`);
-                                        
-                                        // Convert to WAV if needed
-                                        let finalBuffer: Buffer;
+
                                         const isMp3 = (message.audio && message.audio.mimeType === 'audio/mpeg') ||
-                                                      (message.document && message.document.mimeType === 'audio/mpeg');
+                                            (message.document && message.document.mimeType === 'audio/mpeg');
+
+                                        const tempFileExt = isMp3 ? '.mp3' : '.ogg';
+                                        const tempFilePath = `./recordings/temp-${Date.now()}${tempFileExt}`;
+                                        await fs.writeFile(tempFilePath, audioBuffer);
+
+                                        const wavFilePath = tempFilePath.replace(tempFileExt, '.wav');
 
                                         if (isMp3) {
-                                            // It's an MP3, convert to WAV for Discord
-                                            structuredLog('info', 'Detected MP3 audio, converting to WAV...');
-                                            finalBuffer = await this.convertMp3ToWavBuffer(Buffer.from(audioBuffer));
+                                            await this.convertMp3ToWav(tempFilePath, wavFilePath);
                                         } else {
-                                            // Assume OGG voice message, convert to WAV
-                                            structuredLog('info', 'Detected OGG or other audio format, converting to WAV...');
-                                            finalBuffer = await this.convertOggToWavBuffer(Buffer.from(audioBuffer));
+                                            await this.convertOggToWav(tempFilePath, wavFilePath);
                                         }
-                                        
+
+                                        const finalBuffer = await fs.readFile(wavFilePath);
+
+                                        // Clean up temporary files
+                                        await fs.unlink(tempFilePath);
+                                        await fs.unlink(wavFilePath);
+
                                         // Remove event handler
                                         this.telegramClient!.removeEventHandler(handler, new NewMessage({}));
-                                        
+
                                         resolve(finalBuffer);
                                     } else {
                                         reject(new Error('Failed to download audio from Silero bot'));
@@ -271,67 +299,5 @@ export class Gemini {
                 reject(error);
             }
         });
-    }
-
-    // Removed downloadTelegramFile - now using client.downloadMedia directly
-
-    private async convertOggToWavBuffer(oggBuffer: Buffer): Promise<Buffer> {
-        const tempOggPath = `./recordings/temp-${Date.now()}.ogg`;
-        const tempWavPath = `./recordings/temp-${Date.now()}.wav`;
-        
-        try {
-            // Write OGG buffer to temporary file
-            await fs.writeFile(tempOggPath, oggBuffer);
-            
-            // Convert to WAV
-            await this.convertOggToWav(tempOggPath, tempWavPath);
-            
-            // Read WAV buffer
-            const wavBuffer = await fs.readFile(tempWavPath);
-            
-            // Clean up temporary files
-            await fs.unlink(tempOggPath).catch(() => {});
-            await fs.unlink(tempWavPath).catch(() => {});
-            
-            return wavBuffer;
-        } catch (error) {
-            // Clean up on error
-            await fs.unlink(tempOggPath).catch(() => {});
-            await fs.unlink(tempWavPath).catch(() => {});
-            throw error;
-        }
-    }
-
-    private async convertMp3ToWavBuffer(mp3Buffer: Buffer): Promise<Buffer> {
-        const tempMp3Path = `./recordings/temp-${Date.now()}.mp3`;
-        const tempWavPath = `./recordings/temp-${Date.now()}.wav`;
-        
-        try {
-            // Write MP3 buffer to temporary file
-            await fs.writeFile(tempMp3Path, mp3Buffer);
-            
-            // Convert MP3 to WAV using ffmpeg
-            const { stdout, stderr } = await execAsync(
-                `ffmpeg -i ${tempMp3Path} -ar 16000 -ac 1 -c:a pcm_s16le ${tempWavPath}`
-            );
-            
-            if (stderr && !stderr.includes('Warning')) {
-                structuredLog('warn', 'ffmpeg MP3 conversion warning', { error: stderr });
-            }
-            
-            // Read WAV buffer
-            const wavBuffer = await fs.readFile(tempWavPath);
-            
-            // Clean up temporary files
-            await fs.unlink(tempMp3Path).catch(() => {});
-            await fs.unlink(tempWavPath).catch(() => {});
-            
-            return wavBuffer;
-        } catch (error) {
-            // Clean up on error
-            await fs.unlink(tempMp3Path).catch(() => {});
-            await fs.unlink(tempWavPath).catch(() => {});
-            throw error;
-        }
     }
 }

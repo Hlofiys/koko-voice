@@ -71,7 +71,11 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
             await interaction.followUp('Playing Gemini response...');
         }
     } catch (error) {
-        structuredLog('error', 'Error in live command', { error });
+        const err = error as Error;
+        structuredLog('error', 'Error in live command', { 
+            error: err.message, 
+            stack: err.stack 
+        });
         await interaction.followUp('An error occurred while processing your request.');
     }
 }
