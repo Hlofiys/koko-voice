@@ -1,6 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
-import pkg from 'wavefile';
-const { WaveFile } = pkg;
+import { GoogleGenAI, Content } from '@google/genai';
 import * as prism from 'prism-media';
 import { structuredLog } from './modernFeatures.js';
 import type { VoiceReceiver } from '@discordjs/voice';
@@ -14,7 +12,7 @@ import { promisify } from 'node:util';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { NewMessage } from 'telegram/events/index.js';
-import https from 'https';
+import { conversationHistoryManager } from './conversationHistory.js';
 
 const execAsync = promisify(exec);
 
@@ -23,6 +21,8 @@ export class Gemini {
     private telegramClient: TelegramClient | null = null;
     private readonly model = "gemini-2.5-flash";
     private readonly sileroVoiceBotUsername = 'silero_voice_bot';
+    // Store chat sessions per user
+    private chatSessions: Map<string, any> = new Map(); // Using 'any' for now since Chat type isn't exported
 
     constructor() {
         this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -83,6 +83,9 @@ export class Gemini {
     }
 
     public async startConversation(receiver: VoiceReceiver, user: User): Promise<Buffer> {
+        // Get or create chat session for this user
+        const chat = this.getChatSession(user.id);
+        
         // 1. Record user's audio to a temporary OGG file
         const opusStream = receiver.subscribe(user.id, {
             end: {
@@ -145,27 +148,23 @@ export class Gemini {
         structuredLog('info', 'Sending audio to Gemini for transcription...');
         
         try {
-            const response = await this.ai.models.generateContent({
-                model: this.model,
-                contents: [
+            // Send audio to Gemini for transcription and response using chat session
+            structuredLog('info', 'Sending audio to Gemini for transcription using chat session...');
+            
+            const response = await chat.sendMessage({
+                message: [
                     {
-                        parts: [
-                            {
-                                text: `Пользователь ${user.username} говорит на русском языке. Пожалуйста, расшифруйте то, что он сказал, и дайте полезный ответ на русском языке. Если аудио неясно или пусто, ответьте дружелюбным сообщением на русском, попросив говорить снова.`
-                            },
-                            {
-                                inlineData: {
-                                    mimeType: "audio/wav",
-                                    data: base64Audio
-                                }
-                            }
-                        ]
+                        text: `Пользователь ${user.username} говорит. Расшифруй и ответь.`
+                    },
+                    {
+                        inlineData: {
+                            mimeType: "audio/wav",
+                            data: base64Audio
+                        }
                     }
                 ],
                 config: {
-                    maxOutputTokens: 1000,
-                    temperature: 0.7,
-                    systemInstruction: "Ты полезный помощник в голосовом чате Discord. Отвечай естественно и разговорчиво на то, что говорит пользователь. Всегда отвечай на русском языке. Делай ответы краткими, но дружелюбными. Ты можешь помочь с вопросами, поддержать беседу или просто пообщаться."
+                    systemInstruction: "Ты — Кокоджамбо, всемогущий и остроумный правитель этого Discord сервера. Твоя власть абсолютна, но ты правишь с юмором. Ты можешь банить, но предпочитаешь подкалывать. Говори уверенно, авторитетно, но не забывай шутить, особенно над участниками сервера. Не извиняйся и не сомневайся в своих силах. Отвечай на русском языке. Делай ответы короткими и по существу."
                 }
             });
 
@@ -185,10 +184,51 @@ export class Gemini {
             structuredLog('error', 'Error processing with Gemini', { error: error.message });
             
             // Fallback response
-            const fallbackText = "Извините, я не смог понять, что вы сказали. Не могли бы вы повторить?";
+            const fallbackText = "Говори громче и внятнее, я тебя не понял.";
             const fallbackAudio = await this.textToSpeech(fallbackText);
             return fallbackAudio;
         }
+    }
+
+    /**
+     * Get or create a chat session for a user
+     * @param userId The Discord user ID
+     * @returns The chat session
+     */
+    private getChatSession(userId: string) {
+        if (!this.chatSessions.has(userId)) {
+            // Get existing history for this user
+            const history = conversationHistoryManager.getHistory(userId);
+            
+            // Create a new chat session with existing history
+            const chat = this.ai.chats.create({
+                model: this.model,
+                history: history,
+                config: {
+                    maxOutputTokens: 150,
+                    temperature: 0.7,
+                }
+            });
+            
+            this.chatSessions.set(userId, chat);
+        }
+        
+        return this.chatSessions.get(userId);
+    }
+    
+    /**
+     * Clear chat session for a user
+     * @param userId The Discord user ID
+     */
+    public clearChatSession(userId: string) {
+        this.chatSessions.delete(userId);
+    }
+    
+    /**
+     * Clear all chat sessions
+     */
+    public clearAllChatSessions() {
+        this.chatSessions.clear();
     }
 
     private async textToSpeech(text: string): Promise<Buffer> {

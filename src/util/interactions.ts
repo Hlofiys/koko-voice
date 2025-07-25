@@ -4,6 +4,7 @@ import { createVolumeMonitoringStream } from './createListeningStream.js';
 import { structuredLog } from './modernFeatures.js';
 import { Gemini } from './gemini.js';
 import { Readable } from 'node:stream';
+import { conversationHistoryManager } from './conversationHistory.js';
 
 const mutedUsers = new Map<Snowflake, NodeJS.Timeout>();
 const activeStreams = new Map<Snowflake, () => void>();
@@ -31,6 +32,25 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
         await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
         const user = interaction.user;
         const gemini = new Gemini();
+        
+        // Clean up conversation history when session ends
+        const cleanup = () => {
+            // Clear chat session for this user
+            gemini.clearChatSession(user.id);
+            // Clear conversation history for this user
+            conversationHistoryManager.clearHistory(user.id);
+            structuredLog('info', 'Cleared conversation history for user', { userId: user.id });
+        };
+        
+        // Set up event listeners to clean up when connection ends
+        const onStateChange = (oldState: any, newState: any) => {
+            if (newState.status === VoiceConnectionStatus.Destroyed) {
+                cleanup();
+                connection.removeListener('stateChange', onStateChange);
+            }
+        };
+        
+        connection.on('stateChange', onStateChange);
 
         while (connection.state.status === VoiceConnectionStatus.Ready) {
             structuredLog('info', 'Starting live conversation with Gemini', { userId: user.id });
@@ -140,6 +160,10 @@ async function join(interaction: ChatInputCommandInteraction<'cached'>) {
 
 async function leave(interaction: ChatInputCommandInteraction<'cached'>) {
 	const connection = getVoiceConnection(interaction.guildId);
+	
+	// Clear all conversation histories when bot leaves
+	conversationHistoryManager.clearAllHistories();
+	structuredLog('info', 'Cleared all conversation histories');
 
 	if (connection) {
 		// Clean up all active streams and timeouts
