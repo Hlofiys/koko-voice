@@ -95,17 +95,30 @@ export class Gemini {
             return message;
         };
 
-        const handleTurn = async () => {
-            const turns = [];
-            let done = false;
-            while (!done) {
-                const message = await waitMessage();
-                turns.push(message);
-                if (message.serverContent && message.serverContent.turnComplete) {
-                    done = true;
+        const handleTurn = async (): Promise<any[]> => {
+            const timeoutPromise = new Promise<any[]>((_, reject) =>
+                setTimeout(() => reject(new Error('Gemini response timed out')), 5000)
+            );
+
+            const conversationPromise = (async () => {
+                const turns = [];
+                let done = false;
+                while (!done) {
+                    const message = await waitMessage();
+                    turns.push(message);
+                    if (message.serverContent && message.serverContent.turnComplete) {
+                        done = true;
+                    }
                 }
+                return turns;
+            })();
+
+            try {
+                return await Promise.race([conversationPromise, timeoutPromise]);
+            } catch (error) {
+                structuredLog('warn', 'Gemini response timed out');
+                return []; // Return empty buffer on timeout
             }
-            return turns;
         };
 
         const session = await this.ai.live.connect({
