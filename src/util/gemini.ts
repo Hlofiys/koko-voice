@@ -210,10 +210,10 @@ export class Gemini {
                     try {
                         const message = event.message;
                         
-                        structuredLog('info', `Received message from Telegram - FromID: ${message.fromId?.userId?.toString()}, SileroID: ${sileroBot.id.toString()}, HasVoice: ${!!message.voice}, HasAudio: ${!!message.audio}, HasDocument: ${!!message.document}`);
+                        structuredLog('info', `Received message from Telegram - ChatID: ${message.chatId?.toString()}, SileroID: ${sileroBot.id.toString()}, HasVoice: ${!!message.voice}, HasAudio: ${!!message.audio}, HasDocument: ${!!message.document}`);
                         
                         // Check if message is from silero_voice_bot
-                        if (message.fromId?.userId?.toString() === sileroBot.id.toString()) {
+                        if (message.chatId?.toString() === sileroBot.id.toString()) {
                             // Check for any type of media (voice, audio, document)
                             if (message.voice || message.audio || message.document) {
                                 structuredLog('info', 'Found audio message from Silero bot, downloading...');
@@ -226,13 +226,18 @@ export class Gemini {
                                     if (audioBuffer) {
                                         structuredLog('info', `Downloaded audio from Silero: ${audioBuffer.length} bytes`);
                                         
-                                        // Convert to WAV if needed (MP3 files might not need conversion)
+                                        // Convert to WAV if needed
                                         let finalBuffer: Buffer;
-                                        if (message.audio && message.audio.mimeType === 'audio/mpeg') {
-                                            // It's already MP3, convert to WAV for Discord
+                                        const isMp3 = (message.audio && message.audio.mimeType === 'audio/mpeg') ||
+                                                      (message.document && message.document.mimeType === 'audio/mpeg');
+
+                                        if (isMp3) {
+                                            // It's an MP3, convert to WAV for Discord
+                                            structuredLog('info', 'Detected MP3 audio, converting to WAV...');
                                             finalBuffer = await this.convertMp3ToWavBuffer(Buffer.from(audioBuffer));
                                         } else {
-                                            // OGG voice message, convert to WAV
+                                            // Assume OGG voice message, convert to WAV
+                                            structuredLog('info', 'Detected OGG or other audio format, converting to WAV...');
                                             finalBuffer = await this.convertOggToWavBuffer(Buffer.from(audioBuffer));
                                         }
                                         
