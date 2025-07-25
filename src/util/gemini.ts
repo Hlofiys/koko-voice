@@ -26,7 +26,7 @@ export class Gemini {
         try {
             // Use ffmpeg to convert OGG to WAV, resample to 16kHz, and convert to mono
             const { stdout, stderr } = await execAsync(
-                `ffmpeg -i ${oggPath} -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`
+                `ffmpeg -i ${oggPath} -filter:a "volume=2.0" -ar 16000 -ac 1 -c:a pcm_s16le ${wavPath}`
             );
             if (stderr) {
                 structuredLog('warn', 'ffmpeg conversion warning', { error: stderr });
@@ -138,7 +138,7 @@ export class Gemini {
         // 4. Send the converted WAV file to Gemini
         structuredLog('info', 'Reading converted WAV file...', { filename: tempWavPath });
         const fileBuffer = await fs.readFile(tempWavPath);
-        await fs.unlink(tempWavPath); // Delete the WAV file now that we have it in memory
+        await fs.unlink(tempWavPath); // Delete the intermediate WAV file
         structuredLog('info', 'WAV file read', { bufferSize: fileBuffer.length });
 
         if (fileBuffer.length === 0) {
