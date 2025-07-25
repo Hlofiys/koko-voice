@@ -116,6 +116,8 @@ export interface LogContext {
 	reason?: string;
     bufferSize?: number;
     base64Length?: number;
+    fromState?: string;
+    toState?: string;
 }
 
 export function structuredLog(level: 'info' | 'warn' | 'error', message: string, context?: LogContext): void {

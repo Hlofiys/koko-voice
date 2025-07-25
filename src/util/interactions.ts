@@ -35,7 +35,7 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
         while (connection.state.status === VoiceConnectionStatus.Ready) {
             structuredLog('info', 'Starting live conversation with Gemini', { userId: user.id });
             const audioBuffer = await gemini.startConversation(connection.receiver, user);
-            structuredLog('info', 'Gemini conversation completed', { userId: user.id });
+            structuredLog('info', 'Gemini conversation completed', { userId: user.id, bufferSize: audioBuffer.length });
 
             if (audioBuffer.length === 0) {
                 structuredLog('warn', 'Received empty audio buffer from Gemini, skipping playback.');
@@ -48,9 +48,14 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
                 },
             });
 
+            player.on('error', (error) => {
+                structuredLog('error', 'Audio player error', { error });
+            });
+
             const subscription = connection.subscribe(player);
 
             player.on('stateChange', (oldState, newState) => {
+                structuredLog('info', 'Audio player state change', { fromState: oldState.status, toState: newState.status });
                 if (newState.status === 'idle') {
                     player.stop();
                     if (subscription) {
