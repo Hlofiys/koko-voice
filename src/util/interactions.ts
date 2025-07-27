@@ -5,6 +5,8 @@ import { structuredLog } from './modernFeatures.js';
 import { Gemini } from './gemini.js';
 import { Readable } from 'node:stream';
 import { conversationHistoryManager } from './conversationHistory.js';
+import { smartResponseManager } from './smartResponseManager.js';
+import { voiceActivityDetector } from './voiceActivityDetector.js';
 
 const mutedUsers = new Map<Snowflake, NodeJS.Timeout>();
 const activeStreams = new Map<Snowflake, () => void>();
@@ -41,11 +43,87 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
                 const user = await interaction.client.users.fetch(userId);
                 if (user.bot) return;
 
-                const audioBuffer = await gemini.startConversation(receiver, user, channelId);
+                // Track voice activity start
+                voiceActivityDetector.onVoiceStart(userId);
+            } catch (error) {
+                const err = error as Error;
+                structuredLog('error', 'Error tracking voice start', {
+                    error: err.message,
+                    userId
+                });
+            }
+        });
+
+        receiver.speaking.on('end', async (userId) => {
+            try {
+                const user = await interaction.client.users.fetch(userId);
+                if (user.bot) return;
+
+                // Analyze voice activity and get priority
+                const priority = voiceActivityDetector.onVoiceEnd(user);
                 
-                if (audioBuffer.length === 0) {
+                if (priority === 'skip') {
+                    return; // Skip very short utterances
+                }
+
+                // For high priority (likely bot name), always consider transcription
+                let shouldConsiderResponse = false;
+                if (priority === 'high') {
+                    structuredLog('info', 'High priority voice detected - forcing transcription', { 
+                        user: user.username 
+                    });
+                    shouldConsiderResponse = true;
+                } else {
+                    // Normal priority - use smart response manager
+                    shouldConsiderResponse = smartResponseManager.shouldConsiderResponse(user, channelId);
+                }
+                
+                if (!shouldConsiderResponse) {
+                    structuredLog('info', 'Skipping transcription - user/channel in cooldown', { 
+                        user: user.username 
+                    });
+                    return;
+                }
+
+                // Only transcribe if we might respond
+                let result;
+                try {
+                    result = await gemini.startConversation(receiver, user, channelId);
+                } catch (recordingError: any) {
+                    // Handle recording/conversion errors gracefully
+                    if (recordingError.message.includes('empty') || 
+                        recordingError.message.includes('too briefly') ||
+                        recordingError.message.includes('Failed to record') ||
+                        recordingError.message.includes('Failed to convert')) {
+                        structuredLog('info', 'Skipping due to recording issue', { 
+                            user: user.username, 
+                            error: recordingError.message 
+                        });
+                        return;
+                    }
+                    // Re-throw other errors
+                    throw recordingError;
+                }
+                
+                if (!result.audioBuffer || result.audioBuffer.length === 0) {
                     return; // Skip playback if the audio buffer is empty
                 }
+
+                // Final check with transcription for bot name detection
+                const shouldRespond = smartResponseManager.shouldRespond(user, channelId, result.transcription);
+                
+                if (!shouldRespond) {
+                    structuredLog('info', 'Response skipped after transcription', { 
+                        user: user.username, 
+                        transcription: result.transcription 
+                    });
+                    return;
+                }
+
+                structuredLog('info', 'Bot responding to user', { 
+                    user: user.username, 
+                    transcription: result.transcription 
+                });
 
                 const player = createAudioPlayer({
                     behaviors: {
@@ -68,7 +146,7 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
                     }
                 });
 
-                const resource = createAudioResource(Readable.from(audioBuffer));
+                const resource = createAudioResource(Readable.from(result.audioBuffer));
                 player.play(resource);
             } catch (error) {
                 const err = error as Error;
@@ -83,12 +161,25 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
             if (newState.status === VoiceConnectionStatus.Destroyed) {
                 gemini.clearChatSession(channelId);
                 conversationHistoryManager.clearHistory(channelId);
+                voiceActivityDetector.cleanup();
                 structuredLog('info', 'Cleared conversation history for channel', { channelId });
                 connection.removeListener('stateChange', onStateChange);
             }
         };
         
         connection.on('stateChange', onStateChange);
+
+        // Periodic cleanup of voice activity detector
+        const cleanupInterval = setInterval(() => {
+            voiceActivityDetector.cleanup();
+        }, 60000); // Every minute
+
+        // Clear interval when connection is destroyed
+        connection.on('stateChange', (oldState, newState) => {
+            if (newState.status === VoiceConnectionStatus.Destroyed) {
+                clearInterval(cleanupInterval);
+            }
+        });
 
     } catch (error) {
         const err = error as Error;
@@ -229,9 +320,50 @@ async function unmute(interaction: ChatInputCommandInteraction<'cached'>) {
 }
 
 
+async function stats(interaction: ChatInputCommandInteraction<'cached'>) {
+	const stats = smartResponseManager.getStats();
+	const embed = {
+		title: '🤖 Кокоджамба Stats',
+		color: 0x00ff00,
+		fields: [
+			{
+				name: '📊 Responses This Hour',
+				value: `${stats.responsesThisHour}/${stats.maxResponsesPerHour}`,
+				inline: true
+			},
+			{
+				name: '⏰ Time Until Reset',
+				value: `${Math.ceil(stats.timeUntilReset / 60000)} minutes`,
+				inline: true
+			},
+			{
+				name: '👥 Active Users',
+				value: `${stats.activeUsers}`,
+				inline: true
+			}
+		],
+		timestamp: new Date().toISOString()
+	};
+	
+	await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function reset(interaction: ChatInputCommandInteraction<'cached'>) {
+	// Check if user has admin permissions
+	if (!interaction.memberPermissions?.has('Administrator')) {
+		await interaction.reply({ content: '❌ You need Administrator permissions to use this command.', ephemeral: true });
+		return;
+	}
+	
+	smartResponseManager.resetCooldowns();
+	await interaction.reply({ content: '✅ All cooldowns and stats have been reset!', ephemeral: true });
+}
+
 export const interactionHandlers = new Map([
 	['monitor', join],
 	['stop', leave],
 	['threshold', threshold],
 	['unmute', unmute],
+	['stats', stats],
+	['reset', reset],
 ]);

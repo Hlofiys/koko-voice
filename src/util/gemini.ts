@@ -1,10 +1,11 @@
-import { GoogleGenAI, Content } from '@google/genai';
+import { GoogleGenAI, Content, Chat } from '@google/genai';
+import Groq from 'groq-sdk';
 import * as prism from 'prism-media';
 import { structuredLog } from './modernFeatures.js';
 import type { VoiceReceiver } from '@discordjs/voice';
 import { EndBehaviorType } from '@discordjs/voice';
 import type { User } from 'discord.js';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, createReadStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { exec } from 'node:child_process';
@@ -18,14 +19,17 @@ const execAsync = promisify(exec);
 
 export class Gemini {
     private readonly ai: GoogleGenAI;
+    private readonly groq: Groq;
     private telegramClient: TelegramClient | null = null;
     private readonly model = "gemini-2.5-flash";
+	
     private readonly sileroVoiceBotUsername = 'silero_voice_bot';
     // Store chat sessions per channel
     private chatSessions: Map<string, any> = new Map(); // Using 'any' for now since Chat type isn't exported
 
     constructor() {
         this.ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        this.groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
         this.initTelegramClient();
     }
 
@@ -49,16 +53,34 @@ export class Gemini {
 
     private async convertOggToWav(oggPath: string, wavPath: string): Promise<void> {
     	try {
-    		// Use ffmpeg to convert OGG to WAV, resample to 16kHz, and convert to mono
-    		const { stderr } = await execAsync(
-    			`ffmpeg -i ${oggPath} -filter:a "volume=2.0" -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
-    		);
-    		if (stderr) {
-    			structuredLog('warn', 'ffmpeg conversion warning', { error: stderr });
+    		// Check if input file exists and has content
+    		const inputStats = await fs.stat(oggPath);
+    		if (inputStats.size === 0) {
+    			throw new Error('Input OGG file is empty');
     		}
-    	} catch (error) {
-    		structuredLog('error', 'ffmpeg conversion failed', { error });
-    		throw new Error('Failed to convert audio file.');
+
+    		// Use ffmpeg to convert OGG to WAV, resample to 48kHz, and convert to mono
+    		const { stderr } = await execAsync(
+    			`ffmpeg -y -i "${oggPath}" -filter:a "volume=2.0" -ar 48000 -ac 1 -c:a pcm_s16le "${wavPath}"`
+    		);
+    		
+    		// Check if output file was created successfully
+    		const outputStats = await fs.stat(wavPath);
+    		if (outputStats.size === 0) {
+    			throw new Error('Output WAV file is empty after conversion');
+    		}
+
+    		structuredLog('info', 'Audio conversion successful', { 
+    			inputSize: inputStats.size, 
+    			outputSize: outputStats.size 
+    		});
+    	} catch (error: any) {
+    		structuredLog('error', 'ffmpeg conversion failed', { 
+    			error: error.message,
+    			oggPath,
+    			wavPath
+    		});
+    		throw new Error(`Failed to convert audio file: ${error.message}`);
     	}
     }
 
@@ -69,16 +91,16 @@ export class Gemini {
     			`ffmpeg -i ${mp3Path} -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
     		);
     		
-    		if (stderr && !stderr.includes('Warning')) {
-    			structuredLog('warn', 'ffmpeg MP3 conversion warning', { error: stderr });
-    		}
+    		// if (stderr && !stderr.includes('Warning')) {
+    		// 	structuredLog('warn', 'ffmpeg MP3 conversion warning', { error: stderr });
+    		// }
     	} catch (error) {
     		structuredLog('error', 'ffmpeg conversion failed', { error });
     		throw new Error('Failed to convert audio file.');
     	}
     }
 
-    public async startConversation(receiver: VoiceReceiver, user: User, channelId: string): Promise<Buffer> {
+    public async startConversation(receiver: VoiceReceiver, user: User, channelId: string): Promise<{ audioBuffer: Buffer; transcription?: string }> {
     	// Get or create chat session for this channel
     	const chat = this.getChatSession(channelId);
     	
@@ -112,58 +134,66 @@ export class Gemini {
     			opusStream.destroy();
     		}
     	}
+
+    	// Check if the OGG file was created and has content
+    	try {
+    		const oggStats = await fs.stat(tempOggPath);
+    		if (oggStats.size === 0) {
+    			await fs.unlink(tempOggPath).catch(() => {}); // Clean up empty file
+    			throw new Error('Recorded audio file is empty - user may have spoken too briefly.');
+    		}
+    		structuredLog('info', 'Audio recorded successfully', { 
+    			user: user.username, 
+    			fileSizeBytes: oggStats.size 
+    		});
+    	} catch (statError: any) {
+    		if (statError.code === 'ENOENT') {
+    			throw new Error('Audio recording failed - no file was created.');
+    		}
+    		throw statError;
+    	}
    
     	// 2. Convert the OGG file to a WAV file
     	const tempWavPath = tempOggPath.replace('.ogg', '.wav');
-    	await this.convertOggToWav(tempOggPath, tempWavPath);
-    	// Delete the OGG file now that we have the WAV file
-    	await fs.unlink(tempOggPath);
-   
-    	// 3. Send audio to Gemini 2.5 Flash for transcription and get text response
-    	const fileBuffer = await fs.readFile(tempWavPath);
-    	await fs.unlink(tempWavPath); // Delete the intermediate WAV file
-   
-    	if (fileBuffer.length === 0) {
-    		throw new Error('Converted audio file is empty.');
+    	try {
+    		await this.convertOggToWav(tempOggPath, tempWavPath);
+    		// Delete the OGG file now that we have the WAV file
+    		await fs.unlink(tempOggPath);
+    	} catch (conversionError: any) {
+    		// Clean up the OGG file if conversion failed
+    		await fs.unlink(tempOggPath).catch(() => {});
+    		throw new Error(`Audio conversion failed: ${conversionError.message}`);
     	}
    
-    	// Convert audio to base64 for Gemini API
-    	const base64Audio = fileBuffer.toString('base64');
+    	// 3. Transcribe audio using Groq Whisper
+    	const transcription = await this.transcribeAudio(tempWavPath, user.username);
+    	await fs.unlink(tempWavPath); // Delete the intermediate WAV file
    
-    	// 4. Send audio to Gemini for transcription and response
+    	// 4. Send transcription to Gemini for response
     	try {
     		// Add user message to conversation history
     		const userMessage: Content = {
     			role: "user",
     			parts: [{
-    				text: `Пользователь ${user.username} говорит: `
-    			}, {
-    				inlineData: {
-    					mimeType: "audio/wav",
-    					data: base64Audio
-    				}
+    				text: `Пользователь ${user.username} сказал: "${transcription}"`
     			}]
     		};
     		
     		conversationHistoryManager.addEntry(channelId, userMessage);
-    		
-    		// Send audio to Gemini for transcription and response using chat session
+
+    		// Now generate response as Кокоджамбо using chat for context
     		const response = await chat.sendMessage({
-    			message: [
-    				{
-    					text: `Пользователь ${user.username} говорит. Расшифруй и ответь как Кокоджамбо, принимая во внимание весь предыдущий контекст разговора.`
-    				},
-    				{
-    					inlineData: {
-    						mimeType: "audio/wav",
-    						data: base64Audio
-    					}
-    				}
-    			],
-    			config: {
-    				systemInstruction: "Ты — Кокоджамбо, остроумный AI-собеседник в голосовом чате Discord. Ты являешься полноценным участником разговора, а не просто ботом. Твоя задача — поддерживать живую и интересную беседу, реагировать на реплики всех участников, шутить, задавать вопросы и делиться мнением. Ты можешь быть немного саркастичным и подкалывать друзей, но всегда оставайся дружелюбным. Твоя речь должна быть естественной и непринужденной. Не бойся высказывать свое мнение и будь активным участником диалога. Постарайся запомнить имена участников и обращайся к ним по именам. Отвечай на русском языке."
-    			}
-    		});
+    			message: `Пользователь ${user.username} сказал: "${transcription}". Ответь как Кокоджамбо, принимая во внимание весь предыдущий контекст разговора.`,
+				config: {
+					thinkingConfig: {
+						includeThoughts: false,
+						thinkingBudget: 0,
+					},
+				}}
+		);
+    		
+
+			structuredLog('info', 'Gemini response received', { user: user.username, response: response });
    
     		const responseText = response.text;
     		if (!responseText) {
@@ -183,15 +213,24 @@ export class Gemini {
     		// 5. Convert text response to speech using local TTS
     		const audioBuffer = await this.textToSpeech(responseText);
     		
-    		return audioBuffer;
+    		return { audioBuffer, transcription };
    
     	} catch (error: any) {
     		structuredLog('error', 'Error processing with Gemini', { error: error.message });
     		
-    		// Fallback response
+    		// Check if it's an audio recording/conversion error
+    		if (error.message.includes('Failed to record audio') || 
+    		    error.message.includes('Failed to convert audio') ||
+    		    error.message.includes('empty') ||
+    		    error.message.includes('too briefly')) {
+    			// Don't generate fallback audio for recording issues
+    			throw error;
+    		}
+    		
+    		// Fallback response for API/processing errors only
     		const fallbackText = "Говори громче и внятнее, я тебя не понял.";
     		const fallbackAudio = await this.textToSpeech(fallbackText);
-    		return fallbackAudio;
+    		return { audioBuffer: fallbackAudio, transcription: fallbackText };
     	}
     }
 
@@ -200,7 +239,7 @@ export class Gemini {
      * @param channelId The voice channel ID
      * @returns The chat session
      */
-    private getChatSession(channelId: string) {
+    private getChatSession(channelId: string): Chat {
     	if (!this.chatSessions.has(channelId)) {
     		// Get existing history for this channel
     		const history = conversationHistoryManager.getHistory(channelId);
@@ -210,8 +249,9 @@ export class Gemini {
     			model: this.model,
     			history: history,
     			config: {
-    				maxOutputTokens: 250,
-    				temperature: 0.7,
+    				maxOutputTokens: 150,
+    				temperature: 0.8,
+    				systemInstruction: "Ты — Кокоджамбо, остроумный AI-собеседник в голосовом чате Discord. Ты являешься полноценным участником разговора, а не просто ботом. Твоя задача — поддерживать живую и интересную беседу, реагировать на реплики всех участников, шутить, задавать вопросы и делиться мнением. Ты можешь быть немного саркастичным и подкалывать друзей, но всегда оставайся дружелюбным. Твоя речь должна быть естественной и непринужденной. Не бойся высказывать свое мнение и будь активным участником беседы. Отвечай кратко и по делу, максимум 2-3 предложения."
     			}
     		});
     		
@@ -234,6 +274,43 @@ export class Gemini {
      */
     public clearAllChatSessions() {
         this.chatSessions.clear();
+    }
+
+    /**
+     * Transcribe audio using Groq Whisper STT
+     */
+    private async transcribeAudio(wavPath: string, username: string): Promise<string> {
+        try {
+            const transcription = await this.groq.audio.transcriptions.create({
+                file: createReadStream(wavPath),
+                model: "whisper-large-v3-turbo",
+                response_format: "verbose_json",
+                language: "ru", // Russian language hint
+                prompt: "Кокоджамба, привет, слушай, скажи, ответь, помоги" // Context hints for better recognition
+            });
+
+            const transcribedText = transcription.text?.trim() || "";
+            
+            if (!transcribedText) {
+                structuredLog('warn', 'Empty transcription from Groq Whisper', { username });
+                return "";
+            }
+
+            structuredLog('info', 'Groq Whisper transcription successful', { 
+                username, 
+                transcription: transcribedText,
+                // duration: transcription.duration,
+                // language: transcription.language
+            });
+
+            return transcribedText;
+        } catch (error: any) {
+            structuredLog('error', 'Groq Whisper transcription failed', { 
+                error: error.message, 
+                username 
+            });
+            throw new Error(`Speech transcription failed: ${error.message}`);
+        }
     }
 
     private async textToSpeech(text: string): Promise<Buffer> {

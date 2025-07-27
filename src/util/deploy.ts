@@ -39,6 +39,14 @@ const commands = [
 	new SlashCommandBuilder()
 		.setName('live')
 		.setDescription('Start a live conversation with Gemini'),
+	
+	new SlashCommandBuilder()
+		.setName('stats')
+		.setDescription('Show Кокоджамба response statistics'),
+	
+	new SlashCommandBuilder()
+		.setName('reset')
+		.setDescription('Reset all cooldowns and stats (Admin only)'),
 ].map(command => command.toJSON());
 
 const rest = new REST().setToken(process.env.DISCORD_TOKEN!);
