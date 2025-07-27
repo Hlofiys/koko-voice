@@ -48,146 +48,126 @@ export class Gemini {
     }
 
     private async convertOggToWav(oggPath: string, wavPath: string): Promise<void> {
-        structuredLog('info', `Converting OGG at ${oggPath} to WAV at ${wavPath}`);
-        try {
-            // Use ffmpeg to convert OGG to WAV, resample to 16kHz, and convert to mono
-            const { stderr } = await execAsync(
-                `ffmpeg -i ${oggPath} -filter:a "volume=2.0" -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
-            );
-            if (stderr) {
-                structuredLog('warn', 'ffmpeg conversion warning', { error: stderr });
-            }
-            structuredLog('info', 'ffmpeg conversion from OGG to WAV completed');
-        } catch (error) {
-            structuredLog('error', 'ffmpeg conversion failed', { error });
-            throw new Error('Failed to convert audio file.');
-        }
+    	try {
+    		// Use ffmpeg to convert OGG to WAV, resample to 16kHz, and convert to mono
+    		const { stderr } = await execAsync(
+    			`ffmpeg -i ${oggPath} -filter:a "volume=2.0" -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
+    		);
+    		if (stderr) {
+    			structuredLog('warn', 'ffmpeg conversion warning', { error: stderr });
+    		}
+    	} catch (error) {
+    		structuredLog('error', 'ffmpeg conversion failed', { error });
+    		throw new Error('Failed to convert audio file.');
+    	}
     }
 
     private async convertMp3ToWav(mp3Path: string, wavPath: string): Promise<void> {
-        structuredLog('info', `Converting MP3 at ${mp3Path} to WAV at ${wavPath}`);
-        try {
-            // Convert MP3 to WAV using ffmpeg
-            const { stderr } = await execAsync(
-                `ffmpeg -i ${mp3Path} -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
-            );
-            
-            if (stderr && !stderr.includes('Warning')) {
-                structuredLog('warn', 'ffmpeg MP3 conversion warning', { error: stderr });
-            }
-            structuredLog('info', 'ffmpeg conversion from MP3 to WAV completed');
-        } catch (error) {
-            structuredLog('error', 'ffmpeg conversion failed', { error });
-            throw new Error('Failed to convert audio file.');
-        }
+    	try {
+    		// Convert MP3 to WAV using ffmpeg
+    		const { stderr } = await execAsync(
+    			`ffmpeg -i ${mp3Path} -ar 48000 -ac 1 -c:a pcm_s16le ${wavPath}`
+    		);
+    		
+    		if (stderr && !stderr.includes('Warning')) {
+    			structuredLog('warn', 'ffmpeg MP3 conversion warning', { error: stderr });
+    		}
+    	} catch (error) {
+    		structuredLog('error', 'ffmpeg conversion failed', { error });
+    		throw new Error('Failed to convert audio file.');
+    	}
     }
 
     public async startConversation(receiver: VoiceReceiver, user: User): Promise<Buffer> {
-        // Get or create chat session for this user
-        const chat = this.getChatSession(user.id);
-        
-        // 1. Record user's audio to a temporary OGG file
-        const opusStream = receiver.subscribe(user.id, {
-            end: {
-                behavior: EndBehaviorType.AfterSilence,
-                duration: 1000, // Reduced silence duration
-            },
-        });
-
-        
-
-        
-        const oggStream = new prism.opus.OggLogicalBitstream({
-            opusHead: new prism.opus.OpusHead({
-                channelCount: 2,
-                sampleRate: 48_000,
-            }),
-            pageSizeControl: {
-                maxPackets: 10,
-            },
-        });
-        const tempOggPath = `./recordings/${Date.now()}-${user.id}.ogg`;
-        const out = createWriteStream(tempOggPath);
-
-        structuredLog('info', 'Starting audio recording pipeline...');
-        try {
-            await pipeline(opusStream, oggStream, out);
-            structuredLog('info', 'Audio recording pipeline finished.');
-        } catch (error: any) {
-            structuredLog('error', 'Error in recording pipeline', { error: error.message });
-            throw new Error('Failed to record audio.');
-        } finally {
-            if (!opusStream.destroyed) {
-                structuredLog('warn', 'Opus stream was not destroyed by pipeline, destroying manually.');
-                opusStream.destroy();
-            }
-        }
-
-        // 2. Convert the OGG file to a WAV file
-        const tempWavPath = tempOggPath.replace('.ogg', '.wav');
-        await this.convertOggToWav(tempOggPath, tempWavPath);
-        // Delete the OGG file now that we have the WAV file
-        await fs.unlink(tempOggPath);
-
-        // 3. Send audio to Gemini 2.5 Flash for transcription and get text response
-        structuredLog('info', 'Reading converted WAV file...', { filename: tempWavPath });
-        const fileBuffer = await fs.readFile(tempWavPath);
-        await fs.unlink(tempWavPath); // Delete the intermediate WAV file
-        structuredLog('info', 'WAV file read', { bufferSize: fileBuffer.length });
-
-        if (fileBuffer.length === 0) {
-            structuredLog('error', 'Converted WAV file is empty.');
-            throw new Error('Converted audio file is empty.');
-        }
-
-        // Convert audio to base64 for Gemini API
-        const base64Audio = fileBuffer.toString('base64');
-        structuredLog('info', 'Audio converted to Base64', { base64Length: base64Audio.length });
-
-        // 4. Send audio to Gemini for transcription and response
-        structuredLog('info', 'Sending audio to Gemini for transcription...');
-        
-        try {
-            // Send audio to Gemini for transcription and response using chat session
-            structuredLog('info', 'Sending audio to Gemini for transcription using chat session...');
-            
-            const response = await chat.sendMessage({
-                message: [
-                    {
-                        text: `Пользователь ${user.username} говорит. Расшифруй и ответь.`
-                    },
-                    {
-                        inlineData: {
-                            mimeType: "audio/wav",
-                            data: base64Audio
-                        }
-                    }
-                ],
-                config: {
-                    systemInstruction: "Ты — Кокоджамбо, всемогущий и остроумный правитель этого Discord сервера. Твоя власть абсолютна, но ты правишь с юмором. Ты можешь банить, но предпочитаешь подкалывать. Говори уверенно, авторитетно, но не забывай шутить, особенно над участниками сервера. Не извиняйся и не сомневайся в своих силах. Отвечай на русском языке. Делай ответы короткими и по существу."
-                }
-            });
-
-            const responseText = response.text;
-            if (!responseText) {
-                throw new Error('No text response from Gemini');
-            }
-
-            structuredLog('info', `Received text response from Gemini (${responseText.length} chars): ${responseText.substring(0, 100)}${responseText.length > 100 ? '...' : ''}`);
-
-            // 5. Convert text response to speech using local TTS
-            const audioBuffer = await this.textToSpeech(responseText);
-            
-            return audioBuffer;
-
-        } catch (error: any) {
-            structuredLog('error', 'Error processing with Gemini', { error: error.message });
-            
-            // Fallback response
-            const fallbackText = "Говори громче и внятнее, я тебя не понял.";
-            const fallbackAudio = await this.textToSpeech(fallbackText);
-            return fallbackAudio;
-        }
+    	// Get or create chat session for this user
+    	const chat = this.getChatSession(user.id);
+    	
+    	// 1. Record user's audio to a temporary OGG file
+    	const opusStream = receiver.subscribe(user.id, {
+    		end: {
+    			behavior: EndBehaviorType.AfterSilence,
+    			duration: 1000, // Reduced silence duration
+    		},
+    	});
+   
+    	const oggStream = new prism.opus.OggLogicalBitstream({
+    		opusHead: new prism.opus.OpusHead({
+    			channelCount: 2,
+    			sampleRate: 48_000,
+    		}),
+    		pageSizeControl: {
+    			maxPackets: 10,
+    		},
+    	});
+    	const tempOggPath = `./recordings/${Date.now()}-${user.id}.ogg`;
+    	const out = createWriteStream(tempOggPath);
+   
+    	try {
+    		await pipeline(opusStream, oggStream, out);
+    	} catch (error: any) {
+    		structuredLog('error', 'Error in recording pipeline', { error: error.message });
+    		throw new Error('Failed to record audio.');
+    	} finally {
+    		if (!opusStream.destroyed) {
+    			opusStream.destroy();
+    		}
+    	}
+   
+    	// 2. Convert the OGG file to a WAV file
+    	const tempWavPath = tempOggPath.replace('.ogg', '.wav');
+    	await this.convertOggToWav(tempOggPath, tempWavPath);
+    	// Delete the OGG file now that we have the WAV file
+    	await fs.unlink(tempOggPath);
+   
+    	// 3. Send audio to Gemini 2.5 Flash for transcription and get text response
+    	const fileBuffer = await fs.readFile(tempWavPath);
+    	await fs.unlink(tempWavPath); // Delete the intermediate WAV file
+   
+    	if (fileBuffer.length === 0) {
+    		throw new Error('Converted audio file is empty.');
+    	}
+   
+    	// Convert audio to base64 for Gemini API
+    	const base64Audio = fileBuffer.toString('base64');
+   
+    	// 4. Send audio to Gemini for transcription and response
+    	try {
+    		// Send audio to Gemini for transcription and response using chat session
+    		const response = await chat.sendMessage({
+    			message: [
+    				{
+    					text: `Пользователь ${user.username} говорит. Расшифруй и ответь.`
+    				},
+    				{
+    					inlineData: {
+    						mimeType: "audio/wav",
+    						data: base64Audio
+    					}
+    				}
+    			],
+    			config: {
+    				systemInstruction: "Ты — Кокоджамбо, всемогущий и остроумный правитель этого Discord сервера. Твоя власть абсолютна, но ты правишь с юмором. Ты можешь банить, но предпочитаешь подкалывать. Говори уверенно, авторитетно, но не забывай шутить, особенно над участниками сервера. Не извиняйся и не сомневайся в своих силах. Отвечай на русском языке. Делай ответы короткими и по существу."
+    			}
+    		});
+   
+    		const responseText = response.text;
+    		if (!responseText) {
+    			throw new Error('No text response from Gemini');
+    		}
+   
+    		// 5. Convert text response to speech using local TTS
+    		const audioBuffer = await this.textToSpeech(responseText);
+    		
+    		return audioBuffer;
+   
+    	} catch (error: any) {
+    		structuredLog('error', 'Error processing with Gemini', { error: error.message });
+    		
+    		// Fallback response
+    		const fallbackText = "Говори громче и внятнее, я тебя не понял.";
+    		const fallbackAudio = await this.textToSpeech(fallbackText);
+    		return fallbackAudio;
+    	}
     }
 
     /**
@@ -232,20 +212,14 @@ export class Gemini {
     }
 
     private async textToSpeech(text: string): Promise<Buffer> {
-        structuredLog('info', `Converting text to speech via Telegram Silero bot: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`);
-
-        try {
-            // Send text to silero_voice_bot and wait for audio response
-            const audioBuffer = await this.sendToSileroBot(text);
-            
-            structuredLog('info', `Silero TTS conversion completed, audio size: ${audioBuffer.length} bytes`);
-            
-            return audioBuffer;
-            
-        } catch (error: any) {
-            structuredLog('error', 'Silero TTS failed', { error: error.message });
-            throw new Error(`Silero TTS failed: ${error.message}`);
-        }
+    	try {
+    		// Send text to silero_voice_bot and wait for audio response
+    		const audioBuffer = await this.sendToSileroBot(text);
+    		return audioBuffer;
+    	} catch (error: any) {
+    		structuredLog('error', 'Silero TTS failed', { error: error.message });
+    		throw new Error(`Silero TTS failed: ${error.message}`);
+    	}
     }
 
     private async sendToSileroBot(text: string): Promise<Buffer> {
@@ -260,76 +234,68 @@ export class Gemini {
                 
                 // Send text message to silero_voice_bot
                 await this.telegramClient!.sendMessage(sileroBot, { message: text });
-                structuredLog('info', 'Text sent to Silero bot, waiting for audio response...');
-
+            
                 // Set up timeout
                 const timeout = setTimeout(() => {
-                    reject(new Error('Timeout waiting for Silero bot response'));
+                	reject(new Error('Timeout waiting for Silero bot response'));
                 }, 30000); // 30 second timeout
-
+            
                 // Listen for new messages from silero_voice_bot
                 const handler = async (event: any) => {
-                    try {
-                        const message = event.message;
-                        
-                        structuredLog('info', `Received message from Telegram - ChatID: ${message.chatId?.toString()}, SileroID: ${sileroBot.id.toString()}, HasVoice: ${!!message.voice}, HasAudio: ${!!message.audio}, HasDocument: ${!!message.document}`);
-                        
-                        // Check if message is from silero_voice_bot
-                        if (message.chatId?.toString() === sileroBot.id.toString()) {
-                            // Check for any type of media (voice, audio, document)
-                            if (message.voice || message.audio || message.document) {
-                                structuredLog('info', 'Found audio message from Silero bot, downloading...');
-                                clearTimeout(timeout);
-                                
-                                try {
-                                    // Download the audio file
-                                    const audioBuffer = await this.telegramClient!.downloadMedia(message, {});
-                                    
-                                    if (audioBuffer) {
-                                        structuredLog('info', `Downloaded audio from Silero: ${audioBuffer.length} bytes`);
-
-                                        const isMp3 = (message.audio && message.audio.mimeType === 'audio/mpeg') ||
-                                            (message.document && message.document.mimeType === 'audio/mpeg');
-
-                                        const tempFileExt = isMp3 ? '.mp3' : '.ogg';
-                                        const tempFilePath = `./recordings/temp-${Date.now()}${tempFileExt}`;
-                                        await fs.writeFile(tempFilePath, audioBuffer);
-
-                                        const wavFilePath = tempFilePath.replace(tempFileExt, '.wav');
-
-                                        if (isMp3) {
-                                            await this.convertMp3ToWav(tempFilePath, wavFilePath);
-                                        } else {
-                                            await this.convertOggToWav(tempFilePath, wavFilePath);
-                                        }
-
-                                        const finalBuffer = await fs.readFile(wavFilePath);
-
-                                        // Clean up temporary files
-                                        await fs.unlink(tempFilePath);
-                                        await fs.unlink(wavFilePath);
-
-                                        // Remove event handler
-                                        this.telegramClient!.removeEventHandler(handler, new NewMessage({}));
-
-                                        resolve(finalBuffer);
-                                    } else {
-                                        reject(new Error('Failed to download audio from Silero bot'));
-                                    }
-                                } catch (downloadError: any) {
-                                    structuredLog('error', 'Error downloading audio from Silero', { error: downloadError.message });
-                                    reject(downloadError);
-                                }
-                            } else {
-                                structuredLog('info', 'Message from Silero bot has no audio content');
-                            }
-                        }
-                    } catch (error: any) {
-                        structuredLog('error', 'Error in Telegram message handler', { error: error.message });
-                        clearTimeout(timeout);
-                        this.telegramClient!.removeEventHandler(handler, new NewMessage({}));
-                        reject(error);
-                    }
+                	try {
+                		const message = event.message;
+                		
+                		// Check if message is from silero_voice_bot
+                		if (message.chatId?.toString() === sileroBot.id.toString()) {
+                			// Check for any type of media (voice, audio, document)
+                			if (message.voice || message.audio || message.document) {
+                				clearTimeout(timeout);
+                				
+                				try {
+                					// Download the audio file
+                					const audioBuffer = await this.telegramClient!.downloadMedia(message, {});
+                					
+                					if (audioBuffer) {
+                						const isMp3 = (message.audio && message.audio.mimeType === 'audio/mpeg') ||
+                							(message.document && message.document.mimeType === 'audio/mpeg');
+            
+                						const tempFileExt = isMp3 ? '.mp3' : '.ogg';
+                						const tempFilePath = `./recordings/temp-${Date.now()}${tempFileExt}`;
+                						await fs.writeFile(tempFilePath, audioBuffer);
+            
+                						const wavFilePath = tempFilePath.replace(tempFileExt, '.wav');
+            
+                						if (isMp3) {
+                							await this.convertMp3ToWav(tempFilePath, wavFilePath);
+                						} else {
+                							await this.convertOggToWav(tempFilePath, wavFilePath);
+                						}
+            
+                						const finalBuffer = await fs.readFile(wavFilePath);
+            
+                						// Clean up temporary files
+                						await fs.unlink(tempFilePath);
+                						await fs.unlink(wavFilePath);
+            
+                						// Remove event handler
+                						this.telegramClient!.removeEventHandler(handler, new NewMessage({}));
+            
+                						resolve(finalBuffer);
+                					} else {
+                						reject(new Error('Failed to download audio from Silero bot'));
+                					}
+                				} catch (downloadError: any) {
+                					structuredLog('error', 'Error downloading audio from Silero', { error: downloadError.message });
+                					reject(downloadError);
+                				}
+                			}
+                		}
+                	} catch (error: any) {
+                		structuredLog('error', 'Error in Telegram message handler', { error: error.message });
+                		clearTimeout(timeout);
+                		this.telegramClient!.removeEventHandler(handler, new NewMessage({}));
+                		reject(error);
+                	}
                 };
 
                 // Add event handler for new messages

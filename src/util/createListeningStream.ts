@@ -1,7 +1,7 @@
 import { EndBehaviorType, type VoiceReceiver } from '@discordjs/voice';
 import type { User, Snowflake, GuildMember } from 'discord.js';
 import * as prism from 'prism-media';
-import { PerformanceMonitor, structuredLog } from './modernFeatures.js';
+import { structuredLog } from './modernFeatures.js';
 import { analyzeAudioVolume } from './volumeAnalyzer.js';
 
 /**
@@ -26,10 +26,7 @@ export function createVolumeMonitoringStream(
 		rate: 48000,
 	});
 
-	structuredLog('info', 'Started volume monitoring', {
-		userId: user.id,
-		username: user.displayName,
-	});
+	structuredLog('info', 'Started volume monitoring', { userId: user.id });
 
 	const cleanup = () => {
 		if (!opusStream.destroyed) {
@@ -100,12 +97,7 @@ async function muteUserForBeingLoud(
 		const muteDuration = parseInt(process.env.MUTE_DURATION || '30000'); // 30 seconds default
 		await member.voice.setMute(true, 'Volume too loud - automatic mute');
 
-		structuredLog('info', 'User muted for being too loud', {
-			userId: user.id,
-			username: user.displayName,
-			volume: volume.toFixed(3),
-			muteDuration: muteDuration / 1000,
-		});
+		structuredLog('info', 'User muted for being too loud', { userId: user.id });
 
 		const unmuteTimeout = setTimeout(async () => {
 			try {

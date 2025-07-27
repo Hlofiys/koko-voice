@@ -35,10 +35,6 @@ const commands = [
 				.setDescription('The user to unmute (leave empty to unmute all)')
 				.setRequired(false)
 		),
-	
-	new SlashCommandBuilder()
-		.setName('status')
-		.setDescription('Show the bot\'s current monitoring status'),
 
 	new SlashCommandBuilder()
 		.setName('live')

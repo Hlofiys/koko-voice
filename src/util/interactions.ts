@@ -53,43 +53,38 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
         connection.on('stateChange', onStateChange);
 
         while (connection.state.status === VoiceConnectionStatus.Ready) {
-            structuredLog('info', 'Starting live conversation with Gemini', { userId: user.id });
             const audioBuffer = await gemini.startConversation(connection.receiver, user);
-            structuredLog('info', 'Gemini conversation completed', { userId: user.id, bufferSize: audioBuffer.length });
-
+         
             if (audioBuffer.length === 0) {
-                structuredLog('warn', 'Received empty audio buffer from Gemini, skipping playback.');
-                continue; // Skip playback if the audio buffer is empty
+            	continue; // Skip playback if the audio buffer is empty
             }
-
+         
             const player = createAudioPlayer({
-                behaviors: {
-                    noSubscriber: NoSubscriberBehavior.Pause,
-                },
+            	behaviors: {
+            		noSubscriber: NoSubscriberBehavior.Pause,
+            	},
             });
-
+         
             player.on('error', (error) => {
-                structuredLog('error', 'Audio player error', { error });
+            	structuredLog('error', 'Audio player error', { error });
             });
-
+         
             const subscription = connection.subscribe(player);
-
+         
             player.on('stateChange', (oldState, newState) => {
-                structuredLog('info', 'Audio player state change', { fromState: oldState.status, toState: newState.status });
-                if (newState.status === 'idle') {
-                    player.stop();
-                    if (subscription) {
-                        subscription.unsubscribe();
-                    }
-                }
+            	if (newState.status === 'idle') {
+            		player.stop();
+            		if (subscription) {
+            			subscription.unsubscribe();
+            		}
+            	}
             });
-
-            structuredLog('info', 'Playing Gemini response audio', { userId: user.id });
+         
             const resource = createAudioResource(Readable.from(audioBuffer));
             player.play(resource);
             // The connection is already subscribed to the player, no need to subscribe again
             await interaction.followUp('Playing Gemini response...');
-        }
+           }
     } catch (error) {
         const err = error as Error;
         structuredLog('error', 'Error in live command', { 
@@ -228,26 +223,10 @@ async function unmute(interaction: ChatInputCommandInteraction<'cached'>) {
 	}
 }
 
-async function status(interaction: ChatInputCommandInteraction<'cached'>) {
-	const connection = getVoiceConnection(interaction.guildId);
-	if (!connection) {
-		await interaction.reply({ content: '❌ I\'m not in a voice channel.', ephemeral: true });
-		return;
-	}
-
-	const mutedCount = mutedUsers.size;
-	const monitoringCount = activeStreams.size;
-
-	await interaction.reply({
-		content: `📊 **Status**\n- Muted users: ${mutedCount}\n- Actively monitoring: ${monitoringCount}`,
-		ephemeral: true,
-	});
-}
 
 export const interactionHandlers = new Map([
 	['monitor', join],
 	['stop', leave],
 	['threshold', threshold],
 	['unmute', unmute],
-	['status', status],
 ]);

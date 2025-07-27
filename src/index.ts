@@ -21,19 +21,8 @@ const client = new Client({
 
 client.once(Events.ClientReady, (readyClient) => {
 	console.log(`🤖 Ready! Logged in as ${readyClient.user.tag}`);
-	console.log(`📁 Recordings will be saved to: ${process.env.RECORDINGS_DIR || './recordings'}`);
-	console.log(`🎤 Voice recording bot is online and ready to capture speech!`);
 });
 
-/**
- * The ids of the users that can be recorded by the bot.
- */
-const recordable = new Set<Snowflake>();
-
-/**
- * Storage for ongoing recordings per user
- */
-const activeRecordings = new Map<Snowflake, boolean>();
 
 client.on(Events.InteractionCreate, async (interaction) => {
 	if (!interaction.inCachedGuild() || !interaction.isChatInputCommand()) return;
