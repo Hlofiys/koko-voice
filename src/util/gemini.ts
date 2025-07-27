@@ -21,7 +21,7 @@ export class Gemini {
     private telegramClient: TelegramClient | null = null;
     private readonly model = "gemini-2.5-flash";
     private readonly sileroVoiceBotUsername = 'silero_voice_bot';
-    // Store chat sessions per user
+    // Store chat sessions per channel
     private chatSessions: Map<string, any> = new Map(); // Using 'any' for now since Chat type isn't exported
 
     constructor() {
@@ -78,9 +78,9 @@ export class Gemini {
     	}
     }
 
-    public async startConversation(receiver: VoiceReceiver, user: User): Promise<Buffer> {
-    	// Get or create chat session for this user
-    	const chat = this.getChatSession(user.id);
+    public async startConversation(receiver: VoiceReceiver, user: User, channelId: string): Promise<Buffer> {
+    	// Get or create chat session for this channel
+    	const chat = this.getChatSession(channelId);
     	
     	// 1. Record user's audio to a temporary OGG file
     	const opusStream = receiver.subscribe(user.id, {
@@ -132,11 +132,26 @@ export class Gemini {
    
     	// 4. Send audio to Gemini for transcription and response
     	try {
+    		// Add user message to conversation history
+    		const userMessage: Content = {
+    			role: "user",
+    			parts: [{
+    				text: `Пользователь ${user.username} говорит: `
+    			}, {
+    				inlineData: {
+    					mimeType: "audio/wav",
+    					data: base64Audio
+    				}
+    			}]
+    		};
+    		
+    		conversationHistoryManager.addEntry(channelId, userMessage);
+    		
     		// Send audio to Gemini for transcription and response using chat session
     		const response = await chat.sendMessage({
     			message: [
     				{
-    					text: `Пользователь ${user.username} говорит. Расшифруй и ответь.`
+    					text: `Пользователь ${user.username} говорит. Расшифруй и ответь как Кокоджамбо, принимая во внимание весь предыдущий контекст разговора.`
     				},
     				{
     					inlineData: {
@@ -146,7 +161,7 @@ export class Gemini {
     				}
     			],
     			config: {
-    				systemInstruction: "Ты — Кокоджамбо, всемогущий и остроумный правитель этого Discord сервера. Твоя власть абсолютна, но ты правишь с юмором. Ты можешь банить, но предпочитаешь подкалывать. Говори уверенно, авторитетно, но не забывай шутить, особенно над участниками сервера. Не извиняйся и не сомневайся в своих силах. Отвечай на русском языке. Делай ответы короткими и по существу."
+    				systemInstruction: "Ты — Кокоджамбо, остроумный AI-собеседник в голосовом чате Discord. Ты являешься полноценным участником разговора, а не просто ботом. Твоя задача — поддерживать живую и интересную беседу, реагировать на реплики всех участников, шутить, задавать вопросы и делиться мнением. Ты можешь быть немного саркастичным и подкалывать друзей, но всегда оставайся дружелюбным. Твоя речь должна быть естественной и непринужденной. Не бойся высказывать свое мнение и будь активным участником диалога. Постарайся запомнить имена участников и обращайся к ним по именам. Отвечай на русском языке."
     			}
     		});
    
@@ -154,7 +169,17 @@ export class Gemini {
     		if (!responseText) {
     			throw new Error('No text response from Gemini');
     		}
-   
+    		
+    		// Add bot response to conversation history
+    		const botMessage: Content = {
+    			role: "model",
+    			parts: [{
+    				text: responseText
+    			}]
+    		};
+    		
+    		conversationHistoryManager.addEntry(channelId, botMessage);
+    
     		// 5. Convert text response to speech using local TTS
     		const audioBuffer = await this.textToSpeech(responseText);
     		
@@ -171,37 +196,37 @@ export class Gemini {
     }
 
     /**
-     * Get or create a chat session for a user
-     * @param userId The Discord user ID
+     * Get or create a chat session for a channel
+     * @param channelId The voice channel ID
      * @returns The chat session
      */
-    private getChatSession(userId: string) {
-        if (!this.chatSessions.has(userId)) {
-            // Get existing history for this user
-            const history = conversationHistoryManager.getHistory(userId);
-            
-            // Create a new chat session with existing history
-            const chat = this.ai.chats.create({
-                model: this.model,
-                history: history,
-                config: {
-                    maxOutputTokens: 150,
-                    temperature: 0.7,
-                }
-            });
-            
-            this.chatSessions.set(userId, chat);
-        }
-        
-        return this.chatSessions.get(userId);
+    private getChatSession(channelId: string) {
+    	if (!this.chatSessions.has(channelId)) {
+    		// Get existing history for this channel
+    		const history = conversationHistoryManager.getHistory(channelId);
+    		
+    		// Create a new chat session with existing history
+    		const chat = this.ai.chats.create({
+    			model: this.model,
+    			history: history,
+    			config: {
+    				maxOutputTokens: 250,
+    				temperature: 0.7,
+    			}
+    		});
+    		
+    		this.chatSessions.set(channelId, chat);
+    	}
+    	
+    	return this.chatSessions.get(channelId);
     }
     
     /**
-     * Clear chat session for a user
-     * @param userId The Discord user ID
+     * Clear chat session for a channel
+     * @param channelId The voice channel ID
      */
-    public clearChatSession(userId: string) {
-        this.chatSessions.delete(userId);
+    public clearChatSession(channelId: string) {
+    	this.chatSessions.delete(channelId);
     }
     
     /**

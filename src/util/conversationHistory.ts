@@ -1,41 +1,41 @@
 import { Content } from '@google/genai';
 
 /**
- * Manages conversation history for users in voice sessions
+ * Manages conversation history for voice channels
  */
 export class ConversationHistoryManager {
-    // Store conversation history per user session
+    // Store conversation history per channel
     private histories: Map<string, Content[]> = new Map();
     
     /**
-     * Get the conversation history for a user
-     * @param userId The Discord user ID
+     * Get the conversation history for a channel
+     * @param channelId The voice channel ID
      * @returns The conversation history or empty array if none exists
      */
-    getHistory(userId: string): Content[] {
-        return this.histories.get(userId) || [];
+    getHistory(channelId: string): Content[] {
+        return this.histories.get(channelId) || [];
     }
     
     /**
      * Add a new entry to the conversation history
-     * @param userId The Discord user ID
+     * @param channelId The voice channel ID
      * @param content The content to add to history
      */
-    addEntry(userId: string, content: Content): void {
-        if (!this.histories.has(userId)) {
-            this.histories.set(userId, []);
+    addEntry(channelId: string, content: Content): void {
+        if (!this.histories.has(channelId)) {
+            this.histories.set(channelId, []);
         }
         
-        const history = this.histories.get(userId)!;
+        const history = this.histories.get(channelId)!;
         history.push(content);
     }
     
     /**
-     * Clear the conversation history for a user
-     * @param userId The Discord user ID
+     * Clear the conversation history for a channel
+     * @param channelId The voice channel ID
      */
-    clearHistory(userId: string): void {
-        this.histories.delete(userId);
+    clearHistory(channelId: string): void {
+        this.histories.delete(channelId);
     }
     
     /**
@@ -46,12 +46,12 @@ export class ConversationHistoryManager {
     }
     
     /**
-     * Check if a user has conversation history
-     * @param userId The Discord user ID
-     * @returns True if the user has conversation history, false otherwise
+     * Check if a channel has conversation history
+     * @param channelId The voice channel ID
+     * @returns True if the channel has conversation history, false otherwise
      */
-    hasHistory(userId: string): boolean {
-        return this.histories.has(userId) && this.histories.get(userId)!.length > 0;
+    hasHistory(channelId: string): boolean {
+        return this.histories.has(channelId) && this.histories.get(channelId)!.length > 0;
     }
 }
 

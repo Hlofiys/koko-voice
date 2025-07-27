@@ -30,66 +30,71 @@ export async function handleLiveCommand(interaction: ChatInputCommandInteraction
 
     try {
         await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-        const user = interaction.user;
+        const receiver = connection.receiver;
         const gemini = new Gemini();
-        
-        // Clean up conversation history when session ends
-        const cleanup = () => {
-            // Clear chat session for this user
-            gemini.clearChatSession(user.id);
-            // Clear conversation history for this user
-            conversationHistoryManager.clearHistory(user.id);
-            structuredLog('info', 'Cleared conversation history for user', { userId: user.id });
-        };
-        
-        // Set up event listeners to clean up when connection ends
+        const channelId = interaction.member.voice.channel!.id;
+
+        await interaction.followUp(`🎙️ Now listening to everyone in **${interaction.member?.voice.channel?.name}**!`);
+
+        receiver.speaking.on('start', async (userId) => {
+            try {
+                const user = await interaction.client.users.fetch(userId);
+                if (user.bot) return;
+
+                const audioBuffer = await gemini.startConversation(receiver, user, channelId);
+                
+                if (audioBuffer.length === 0) {
+                    return; // Skip playback if the audio buffer is empty
+                }
+
+                const player = createAudioPlayer({
+                    behaviors: {
+                        noSubscriber: NoSubscriberBehavior.Pause,
+                    },
+                });
+
+                player.on('error', (error) => {
+                    structuredLog('error', 'Audio player error', { error });
+                });
+
+                const subscription = connection.subscribe(player);
+
+                player.on('stateChange', (oldState, newState) => {
+                    if (newState.status === 'idle') {
+                        player.stop();
+                        if (subscription) {
+                            subscription.unsubscribe();
+                        }
+                    }
+                });
+
+                const resource = createAudioResource(Readable.from(audioBuffer));
+                player.play(resource);
+            } catch (error) {
+                const err = error as Error;
+                structuredLog('error', 'Error in live conversation', {
+                    error: err.message,
+                    stack: err.stack
+                });
+            }
+        });
+
         const onStateChange = (oldState: any, newState: any) => {
             if (newState.status === VoiceConnectionStatus.Destroyed) {
-                cleanup();
+                gemini.clearChatSession(channelId);
+                conversationHistoryManager.clearHistory(channelId);
+                structuredLog('info', 'Cleared conversation history for channel', { channelId });
                 connection.removeListener('stateChange', onStateChange);
             }
         };
         
         connection.on('stateChange', onStateChange);
 
-        while (connection.state.status === VoiceConnectionStatus.Ready) {
-            const audioBuffer = await gemini.startConversation(connection.receiver, user);
-         
-            if (audioBuffer.length === 0) {
-            	continue; // Skip playback if the audio buffer is empty
-            }
-         
-            const player = createAudioPlayer({
-            	behaviors: {
-            		noSubscriber: NoSubscriberBehavior.Pause,
-            	},
-            });
-         
-            player.on('error', (error) => {
-            	structuredLog('error', 'Audio player error', { error });
-            });
-         
-            const subscription = connection.subscribe(player);
-         
-            player.on('stateChange', (oldState, newState) => {
-            	if (newState.status === 'idle') {
-            		player.stop();
-            		if (subscription) {
-            			subscription.unsubscribe();
-            		}
-            	}
-            });
-         
-            const resource = createAudioResource(Readable.from(audioBuffer));
-            player.play(resource);
-            // The connection is already subscribed to the player, no need to subscribe again
-            await interaction.followUp('Playing Gemini response...');
-           }
     } catch (error) {
         const err = error as Error;
-        structuredLog('error', 'Error in live command', { 
-            error: err.message, 
-            stack: err.stack 
+        structuredLog('error', 'Error in live command', {
+            error: err.message,
+            stack: err.stack
         });
         await interaction.followUp('An error occurred while processing your request.');
     }
